@@ -1,0 +1,7 @@
+{
+  "permissions": {
+    "allow": [
+      "PowerShell(cd c:\\\\Users\\\\gogul\\\\Downloads\\\\pOlte\\\\apps\\\\api; npx nest build 2>&1 | Select-Object -Last 150; Write-Output \"EXIT=$LASTEXITCODE\")"
+    ]
+  }
+}
