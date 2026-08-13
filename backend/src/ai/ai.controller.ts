@@ -1,7 +1,14 @@
-import { Controller, Get, Param, Post } from "@nestjs/common";
+import { Controller, Get, Param, Post, UseGuards } from "@nestjs/common";
 import { AiService } from "./ai.service";
+import { Roles } from "../common/decorators/roles.decorator";
+import { RolesGuard } from "../common/guards/roles.guard";
 
+// AI reports are for campaign leadership, not individual Cadres — same
+// SUPER_ADMIN/ADMIN restriction used on AnalyticsController, which these
+// endpoints are built on top of.
 @Controller("ai/campaigns/:id")
+@UseGuards(RolesGuard)
+@Roles("SUPER_ADMIN", "ADMIN")
 export class AiController {
   constructor(private readonly aiService: AiService) {}
 

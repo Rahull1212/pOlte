@@ -5,6 +5,8 @@ import { AppShell } from "@/components/app-shell";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input, Label } from "@/components/ui/input";
 import { Button } from "@/components/ui/button";
+import { Badge } from "@/components/ui/badge";
+import { OverflowMenu } from "@/components/overflow-menu";
 import { RegionSelect } from "@/components/region-select";
 import { useCurrentUser } from "@/hooks/use-auth";
 import { useEvents, useCreateEvent, useMarkAttendance, useEventReport } from "@/hooks/use-events";
@@ -15,6 +17,11 @@ function EventRow({ eventId, name, startAt }: { eventId: string; name: string; s
   const { data: report } = useEventReport(showReport ? eventId : "");
   const markAttendance = useMarkAttendance(eventId);
 
+  const handleCheckIn = () => {
+    if (!user) return;
+    markAttendance.mutate({ userId: user.id, attended: true });
+  };
+
   return (
     <div className="rounded-md border border-slate-100 p-3">
       <div className="flex items-center justify-between">
@@ -22,18 +29,24 @@ function EventRow({ eventId, name, startAt }: { eventId: string; name: string; s
           <p className="text-sm font-medium text-slate-800">{name}</p>
           <p className="text-xs text-slate-500">{new Date(startAt).toLocaleString()}</p>
         </div>
-        <div className="flex gap-2">
-          <Button
-            variant="secondary"
-            onClick={() => user && markAttendance.mutate({ userId: user.id, attended: true })}
-          >
-            Check In
-          </Button>
-          <Button variant="secondary" onClick={() => setShowReport((s) => !s)}>
-            {showReport ? "Hide Report" : "View Report"}
-          </Button>
+        <div className="flex items-center gap-2">
+          {markAttendance.isSuccess ? (
+            <Badge tone="green">Checked in ✓</Badge>
+          ) : (
+            <Button variant="secondary" onClick={handleCheckIn} disabled={markAttendance.isPending}>
+              {markAttendance.isPending ? "Checking in..." : "Check In"}
+            </Button>
+          )}
+          <OverflowMenu
+            items={[
+              { label: showReport ? "Hide Report" : "View Report", onClick: () => setShowReport((s) => !s) },
+            ]}
+          />
         </div>
       </div>
+      {markAttendance.isError && (
+        <p className="mt-2 text-xs text-red-600">{(markAttendance.error as Error).message || "Failed to check in"}</p>
+      )}
       {showReport && report && (
         <p className="mt-2 text-xs text-slate-600">
           Invited: {report.totalInvited} · Attended: {report.totalAttended} · Rate: {report.attendanceRate}%

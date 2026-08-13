@@ -44,7 +44,7 @@ async function main() {
 
   const superAdmin = await prisma.user.create({
     data: {
-      name: "Super Admin",
+      name: "Arjun Reddy",
       phone: "9000000001",
       email: "superadmin@polios.dev",
       passwordHash: defaultPassword,
@@ -58,10 +58,21 @@ async function main() {
 
   let citizenCounter = 1;
 
+  const adminNames = [
+    "Ravi Kumar", "Srinivas Reddy", "Lakshmi Devi", "Anitha Rao",
+    "Suresh Babu", "Padma Naidu", "Venkatesh Goud", "Kavitha Reddy",
+    "Ramesh Chandra", "Sunitha Rani", "Krishna Murthy", "Divya Sri",
+    "Naveen Kumar", "Priya Sharma", "Mahesh Yadav", "Swathi Reddy",
+    "Rajesh Varma", "Sowmya Rani", "Vijay Kumar", "Meena Kumari",
+    "Sandeep Reddy", "Anjali Devi",
+  ];
+  let nameIndex = 0;
+  const nextName = () => adminNames[nameIndex++ % adminNames.length];
+
   for (const district of districts) {
     const districtAdmin = await prisma.user.create({
       data: {
-        name: `${district.name} District Admin`,
+        name: nextName(),
         phone: nextPhone(),
         passwordHash: defaultPassword,
         role: "ADMIN",
@@ -83,7 +94,7 @@ async function main() {
     for (const mandal of mandalsByDistrict[district.id]) {
       const mandalAdmin = await prisma.user.create({
         data: {
-          name: `${mandal.name} Admin`,
+          name: nextName(),
           phone: nextPhone(),
           passwordHash: defaultPassword,
           role: "ADMIN",
@@ -99,7 +110,7 @@ async function main() {
       for (const booth of boothsByMandal[mandal.id]) {
         const boothAdmin = await prisma.user.create({
           data: {
-            name: `${booth.name} Admin`,
+            name: nextName(),
             phone: nextPhone(),
             passwordHash: defaultPassword,
             role: "ADMIN",
@@ -110,7 +121,7 @@ async function main() {
 
         const cadre = await prisma.user.create({
           data: {
-            name: `${booth.name} Cadre`,
+            name: nextName(),
             phone: nextPhone(),
             passwordHash: defaultPassword,
             role: "CADRE",

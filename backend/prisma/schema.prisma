@@ -108,24 +108,38 @@ enum GrievanceStatus {
   REJECTED
 }
 
+enum Gender {
+  MALE
+  FEMALE
+  OTHER
+  PREFER_NOT_TO_SAY
+}
+
+enum OtpPurpose {
+  PHONE_CHANGE
+  PASSWORD_RESET
+}
+
 // ============================================================
 // IDENTITY & HIERARCHY
 // ============================================================
 
 model User {
-  id           String   @id @default(cuid())
-  name         String
-  phone        String   @unique
-  email        String?  @unique
-  passwordHash String
-  role         Role
-  regionId     String
-  region       Region   @relation(fields: [regionId], references: [id])
-  parentUserId String?
-  parent       User?    @relation("UserHierarchy", fields: [parentUserId], references: [id])
-  children     User[]   @relation("UserHierarchy")
-  isActive     Boolean  @default(true)
-  createdAt    DateTime @default(now())
+  id             String   @id @default(cuid())
+  name           String
+  phone          String   @unique
+  email          String?  @unique
+  passwordHash   String
+  role           Role
+  gender         Gender?
+  profilePicture String?
+  regionId       String
+  region         Region   @relation(fields: [regionId], references: [id])
+  parentUserId   String?
+  parent         User?    @relation("UserHierarchy", fields: [parentUserId], references: [id])
+  children       User[]   @relation("UserHierarchy")
+  isActive       Boolean  @default(true)
+  createdAt      DateTime @default(now())
 
   createdCampaigns    Campaign[]         @relation("CampaignCreator")
   allocationsGiven    TargetAllocation[] @relation("AllocationAssignedBy")
@@ -144,6 +158,26 @@ model User {
   eventsCreated       Event[]            @relation("EventCreator")
   eventParticipation  EventParticipant[]
   whatsAppSession     WhatsAppSession?
+  otpCodes            OtpCode[]
+}
+
+// Verification codes for self-service flows that need proof the caller
+// controls a phone number: changing to a new number, and resetting a
+// forgotten password. Codes are hashed at rest (never stored plaintext),
+// short-lived, single-use, and attempt-limited to resist brute force.
+model OtpCode {
+  id         String     @id @default(cuid())
+  phone      String
+  codeHash   String
+  purpose    OtpPurpose
+  userId     String
+  user       User       @relation(fields: [userId], references: [id])
+  attempts   Int        @default(0)
+  expiresAt  DateTime
+  consumedAt DateTime?
+  createdAt  DateTime   @default(now())
+
+  @@index([userId, purpose, phone])
 }
 
 // Tracks where a Cadre is in the WhatsApp conversation flow (main menu,
@@ -220,17 +254,17 @@ model CampaignAttachment {
 // Each row's parentAllocationId points to the allocation it was split from,
 // so the tree mirrors the org hierarchy exactly.
 model TargetAllocation {
-  id                 String            @id @default(cuid())
+  id                 String             @id @default(cuid())
   campaignId         String
-  campaign           Campaign          @relation(fields: [campaignId], references: [id])
+  campaign           Campaign           @relation(fields: [campaignId], references: [id])
   regionId           String
-  region             Region            @relation(fields: [regionId], references: [id])
+  region             Region             @relation(fields: [regionId], references: [id])
   ownerUserId        String
-  ownerUser          User              @relation("AllocationOwner", fields: [ownerUserId], references: [id])
+  ownerUser          User               @relation("AllocationOwner", fields: [ownerUserId], references: [id])
   assignedById       String
-  assignedBy         User              @relation("AllocationAssignedBy", fields: [assignedById], references: [id])
+  assignedBy         User               @relation("AllocationAssignedBy", fields: [assignedById], references: [id])
   parentAllocationId String?
-  parentAllocation   TargetAllocation? @relation("AllocationHierarchy", fields: [parentAllocationId], references: [id])
+  parentAllocation   TargetAllocation?  @relation("AllocationHierarchy", fields: [parentAllocationId], references: [id])
   childAllocations   TargetAllocation[] @relation("AllocationHierarchy")
 
   target        Int
@@ -239,8 +273,8 @@ model TargetAllocation {
   notes         String?
 
   allocatedBudget Decimal @db.Decimal(14, 2)
-  approvedBudget  Decimal @db.Decimal(14, 2) @default(0)
-  spentBudget     Decimal @db.Decimal(14, 2) @default(0)
+  approvedBudget  Decimal @default(0) @db.Decimal(14, 2)
+  spentBudget     Decimal @default(0) @db.Decimal(14, 2)
   // remainingBudget = allocatedBudget - spentBudget, computed in the service layer
 
   createdAt DateTime @default(now())
@@ -337,17 +371,17 @@ model ExpenseRequest {
 // ============================================================
 
 model Announcement {
-  id              String           @id @default(cuid())
+  id              String      @id @default(cuid())
   campaignId      String?
-  campaign        Campaign?        @relation(fields: [campaignId], references: [id])
+  campaign        Campaign?   @relation(fields: [campaignId], references: [id])
   senderId        String
-  sender          User             @relation(fields: [senderId], references: [id])
+  sender          User        @relation(fields: [senderId], references: [id])
   targetLevels    Role[]
   targetRegionIds String[]
   messageType     MessageType
   content         String
   mediaUrl        String?
-  createdAt       DateTime         @default(now())
+  createdAt       DateTime    @default(now())
 }
 
 model Notification {

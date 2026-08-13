@@ -2,6 +2,7 @@ import { Injectable, Logger } from "@nestjs/common";
 import Anthropic from "@anthropic-ai/sdk";
 import { PrismaService } from "../prisma/prisma.service";
 import { AnalyticsService } from "../analytics/analytics.service";
+import { AuthenticatedUser } from "../auth/types";
 
 /**
  * Thin wrapper around the Claude API — no agent framework, no planner.
@@ -13,6 +14,17 @@ import { AnalyticsService } from "../analytics/analytics.service";
 export class AiService {
   private readonly logger = new Logger(AiService.name);
   private readonly client: Anthropic | null;
+
+  // AiController has no auth/region context wired in today (a pre-existing
+  // gap, not introduced here) — these reports have always analyzed a
+  // campaign org-wide, so this synthetic SUPER_ADMIN scope preserves that
+  // exact behavior against AnalyticsService's now-scoped methods.
+  private readonly orgWideScope: AuthenticatedUser = {
+    id: "system",
+    role: "SUPER_ADMIN",
+    regionId: "",
+    name: "System",
+  };
 
   constructor(
     private readonly prisma: PrismaService,
@@ -42,7 +54,7 @@ export class AiService {
 
   async generateSummary(campaignId: string) {
     const campaign = await this.prisma.campaign.findUniqueOrThrow({ where: { id: campaignId } });
-    const stats = await this.analyticsService.campaignProgress(campaignId);
+    const stats = await this.analyticsService.campaignProgress(campaignId, this.orgWideScope);
 
     const content = await this.callLLM(
       "You are a campaign operations analyst for a political party. Write a concise, factual 3-4 sentence summary using only the numbers given. Do not invent figures.",
@@ -56,7 +68,7 @@ export class AiService {
     // Ground truth projection is arithmetic, not AI: linear extrapolation
     // from progress-to-date over elapsed time.
     const campaign = await this.prisma.campaign.findUniqueOrThrow({ where: { id: campaignId } });
-    const stats = await this.analyticsService.campaignProgress(campaignId);
+    const stats = await this.analyticsService.campaignProgress(campaignId, this.orgWideScope);
 
     const elapsedMs = Date.now() - campaign.startDate.getTime();
     const totalMs = campaign.endDate.getTime() - campaign.startDate.getTime();
@@ -73,7 +85,7 @@ export class AiService {
   }
 
   async identifySlowRegions(campaignId: string) {
-    const districts = await this.analyticsService.regionProgress(campaignId, "DISTRICT");
+    const districts = await this.analyticsService.regionProgress(campaignId, "DISTRICT", this.orgWideScope);
     const slow = districts.filter((d) => d.achievementPct < 50).slice(-5);
 
     const content = await this.callLLM(
@@ -85,7 +97,7 @@ export class AiService {
   }
 
   async recommendBudgetRedistribution(campaignId: string) {
-    const districts = await this.analyticsService.regionProgress(campaignId, "DISTRICT");
+    const districts = await this.analyticsService.regionProgress(campaignId, "DISTRICT", this.orgWideScope);
     const underspent = districts.filter((d) => d.allocatedBudget > 0 && d.spentBudget / d.allocatedBudget < 0.3);
     const overachieving = districts.filter((d) => d.achievementPct > 90);
 
@@ -99,7 +111,7 @@ export class AiService {
 
   async weeklyReport(campaignId: string) {
     const campaign = await this.prisma.campaign.findUniqueOrThrow({ where: { id: campaignId } });
-    const stats = await this.analyticsService.campaignProgress(campaignId);
+    const stats = await this.analyticsService.campaignProgress(campaignId, this.orgWideScope);
     const sevenDaysAgo = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000);
     const recentProgress = await this.prisma.progressUpdate.count({
       where: { task: { campaignId }, createdAt: { gte: sevenDaysAgo } },
@@ -114,8 +126,8 @@ export class AiService {
   }
 
   async nextActions(campaignId: string) {
-    const stats = await this.analyticsService.campaignProgress(campaignId);
-    const { overdue } = await this.analyticsService.pendingAndOverdue(campaignId);
+    const stats = await this.analyticsService.campaignProgress(campaignId, this.orgWideScope);
+    const { overdue } = await this.analyticsService.pendingAndOverdue(campaignId, this.orgWideScope);
 
     const content = await this.callLLM(
       "You are a campaign operations advisor. Suggest 3 concrete next actions for state leadership based on the data. Label this clearly as a suggestion, not a decision.",

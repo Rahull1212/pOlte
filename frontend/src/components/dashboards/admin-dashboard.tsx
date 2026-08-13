@@ -4,15 +4,26 @@ import Link from "next/link";
 import { KpiTile } from "@/components/kpi-tile";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
+import { Badge } from "@/components/ui/badge";
+import { CampaignProgressList } from "@/components/campaign-progress-list";
 import { useManagedUsers } from "@/hooks/use-users";
 import { useEvents } from "@/hooks/use-events";
 import { useCurrentUser } from "@/hooks/use-auth";
+import { useAnalyticsOverview } from "@/hooks/use-analytics";
 import { UpcomingEvents } from "@/components/upcoming-events";
+
+function formatCurrency(amount: number) {
+  return `₹${amount.toLocaleString("en-IN")}`;
+}
 
 export function AdminDashboard() {
   const { data: currentUser } = useCurrentUser();
   const { data: cadres } = useManagedUsers("CADRE");
   const { data: events } = useEvents();
+  const { data: overview } = useAnalyticsOverview();
+
+  const rank = overview?.myRegionRank;
+  const cadreLeaderboard = overview?.cadreLeaderboard;
 
   return (
     <div>
@@ -23,9 +34,78 @@ export function AdminDashboard() {
         </CardContent>
       </Card>
 
-      <div className="mb-6 grid grid-cols-2 gap-4 md:grid-cols-4">
+      <div className="mb-4 grid grid-cols-2 gap-4 md:grid-cols-4">
         <KpiTile label="My Cadres" value={cadres?.length ?? "-"} href="/users" />
         <KpiTile label="Upcoming Events" value={events?.length ?? "-"} href="/events" />
+        <KpiTile
+          label="My Region Rank"
+          value={rank ? `#${rank.rank} of ${rank.of}` : "-"}
+          sub={rank?.regionName}
+        />
+        <KpiTile
+          label="Pending Expenses"
+          value={overview?.pendingExpenses.count ?? "-"}
+          sub={overview ? formatCurrency(overview.pendingExpenses.amount) : undefined}
+          href="/campaigns"
+        />
+      </div>
+
+      <div className="mb-6 grid grid-cols-2 gap-4 md:grid-cols-4">
+        <KpiTile
+          label="Target Achievement"
+          value={overview ? `${overview.targetAchievementPct}%` : "-"}
+          sub={overview ? `${overview.totalAchieved.toLocaleString()} / ${overview.totalTarget.toLocaleString()}` : undefined}
+        />
+        <KpiTile
+          label="Budget Utilization"
+          value={overview ? `${overview.budgetUtilizationPct}%` : "-"}
+          sub={overview ? formatCurrency(overview.totalSpentBudget) : undefined}
+          tone={overview && overview.budgetUtilizationPct >= 90 ? "warning" : "default"}
+        />
+        <KpiTile
+          label="Task Completion"
+          value={overview ? `${overview.taskCompletionPct}%` : "-"}
+          sub={overview ? `${overview.overdueTasks} overdue` : undefined}
+          tone={overview && overview.overdueTasks > 0 ? "warning" : "good"}
+        />
+        <KpiTile
+          label="Open Grievances"
+          value={overview?.openGrievances ?? "-"}
+          sub={overview ? `${overview.grievanceResolutionPct}% resolved` : undefined}
+          href="/grievances"
+        />
+      </div>
+
+      <div className="mb-6 grid grid-cols-1 gap-4 lg:grid-cols-3">
+        <Card className="lg:col-span-2">
+          <CardHeader>
+            <CardTitle>My Active Campaigns</CardTitle>
+          </CardHeader>
+          <CardContent>
+            <CampaignProgressList campaigns={overview?.campaigns} />
+          </CardContent>
+        </Card>
+
+        <Card>
+          <CardHeader>
+            <CardTitle>Cadre Leaderboard</CardTitle>
+          </CardHeader>
+          <CardContent>
+            <ul className="space-y-1.5">
+              {cadreLeaderboard?.map((c, i) => (
+                <li key={c.id} className="flex items-center justify-between text-sm">
+                  <span className="text-slate-700">
+                    {i + 1}. {c.name}
+                  </span>
+                  <Badge tone={c.total > 0 && c.completed === c.total ? "green" : "slate"}>
+                    {c.completed}/{c.total}
+                  </Badge>
+                </li>
+              ))}
+              {!cadreLeaderboard?.length && <p className="text-xs text-slate-400">No task activity yet.</p>}
+            </ul>
+          </CardContent>
+        </Card>
       </div>
 
       <div className="grid grid-cols-1 gap-4 lg:grid-cols-3">

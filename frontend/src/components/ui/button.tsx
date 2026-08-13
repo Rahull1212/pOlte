@@ -1,13 +1,15 @@
 import { ButtonHTMLAttributes, forwardRef } from "react";
 import clsx from "clsx";
 
-type Variant = "primary" | "secondary" | "ghost" | "danger";
+type Variant = "primary" | "secondary" | "ghost" | "danger" | "inverse";
 
 const variantClasses: Record<Variant, string> = {
   primary: "bg-brand-600 text-white hover:bg-brand-700",
   secondary: "bg-white text-slate-700 border border-slate-300 hover:bg-slate-50",
   ghost: "bg-transparent text-slate-600 hover:bg-slate-100",
   danger: "bg-red-600 text-white hover:bg-red-700",
+  // White-on-color, for use on top of a colored banner/hero section.
+  inverse: "bg-white text-brand-700 hover:bg-brand-50",
 };
 
 export interface ButtonProps extends ButtonHTMLAttributes<HTMLButtonElement> {

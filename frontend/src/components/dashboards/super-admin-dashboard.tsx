@@ -5,13 +5,20 @@ import { Bar, BarChart, CartesianGrid, ResponsiveContainer, Tooltip, XAxis, YAxi
 import { KpiTile } from "@/components/kpi-tile";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
+import { Badge } from "@/components/ui/badge";
+import { CampaignProgressList } from "@/components/campaign-progress-list";
 import { useManagedUsers } from "@/hooks/use-users";
 import { useDashboardSummary } from "@/hooks/use-campaigns";
 import { useEvents } from "@/hooks/use-events";
 import { useRecentActivity } from "@/hooks/use-audit";
 import { useCurrentUser } from "@/hooks/use-auth";
+import { useAnalyticsOverview } from "@/hooks/use-analytics";
 import { ActivityFeed } from "@/components/activity-feed";
 import { UpcomingEvents } from "@/components/upcoming-events";
+
+function formatCurrency(amount: number) {
+  return `₹${amount.toLocaleString("en-IN")}`;
+}
 
 export function SuperAdminDashboard() {
   const { data: currentUser } = useCurrentUser();
@@ -20,6 +27,7 @@ export function SuperAdminDashboard() {
   const { data: campaignSummary } = useDashboardSummary();
   const { data: events } = useEvents();
   const { data: activity, isLoading: activityLoading } = useRecentActivity();
+  const { data: overview } = useAnalyticsOverview();
 
   const totalCampaigns = (campaignSummary?.active ?? 0) + (campaignSummary?.upcoming ?? 0) + (campaignSummary?.completed ?? 0);
   const chartData = [
@@ -27,6 +35,8 @@ export function SuperAdminDashboard() {
     { name: "Upcoming", count: campaignSummary?.upcoming ?? 0 },
     { name: "Completed", count: campaignSummary?.completed ?? 0 },
   ];
+
+  const leaderboard = overview?.regionLeaderboard;
 
   return (
     <div>
@@ -40,16 +50,67 @@ export function SuperAdminDashboard() {
             </p>
           </div>
           <Link href="/campaigns/new">
-            <Button className="bg-white text-brand-700 hover:bg-brand-50">+ New Campaign</Button>
+            <Button variant="inverse">+ New Campaign</Button>
           </Link>
         </CardContent>
       </Card>
 
-      <div className="mb-6 grid grid-cols-2 gap-4 md:grid-cols-4">
+      <div className="mb-4 grid grid-cols-2 gap-4 md:grid-cols-4">
         <KpiTile label="Admins" value={admins?.length ?? "-"} href="/users" />
         <KpiTile label="Cadres" value={cadres?.length ?? "-"} href="/users?role=CADRE" />
         <KpiTile label="Active Campaigns" value={campaignSummary?.active ?? "-"} href="/campaigns?status=ACTIVE" />
         <KpiTile label="Total Campaigns" value={totalCampaigns} href="/campaigns" />
+      </div>
+
+      <div className="mb-6 grid grid-cols-2 gap-4 md:grid-cols-3 lg:grid-cols-5">
+        <KpiTile
+          label="Target Achievement"
+          value={overview ? `${overview.targetAchievementPct}%` : "-"}
+          sub={overview ? `${overview.totalAchieved.toLocaleString()} / ${overview.totalTarget.toLocaleString()}` : undefined}
+        />
+        <KpiTile
+          label="Budget Utilization"
+          value={overview ? `${overview.budgetUtilizationPct}%` : "-"}
+          sub={overview ? formatCurrency(overview.totalSpentBudget) : undefined}
+          tone={overview && overview.budgetUtilizationPct >= 90 ? "warning" : "default"}
+        />
+        <KpiTile
+          label="Task Completion"
+          value={overview ? `${overview.taskCompletionPct}%` : "-"}
+          sub={overview ? `${overview.overdueTasks} overdue` : undefined}
+          tone={overview && overview.overdueTasks > 0 ? "warning" : "good"}
+        />
+        <KpiTile
+          label="Open Grievances"
+          value={overview?.openGrievances ?? "-"}
+          sub={overview ? `${overview.grievanceResolutionPct}% resolved` : undefined}
+          href="/grievances"
+        />
+        <KpiTile
+          label="Pending Expenses"
+          value={overview?.pendingExpenses.count ?? "-"}
+          sub={overview ? formatCurrency(overview.pendingExpenses.amount) : undefined}
+        />
+      </div>
+
+      <div className="mb-6 grid grid-cols-1 gap-4 lg:grid-cols-3">
+        <Card className="lg:col-span-2">
+          <CardHeader>
+            <CardTitle>Active Campaigns</CardTitle>
+          </CardHeader>
+          <CardContent>
+            <CampaignProgressList campaigns={overview?.campaigns} />
+          </CardContent>
+        </Card>
+
+        <Card>
+          <CardHeader>
+            <CardTitle>Upcoming Events</CardTitle>
+          </CardHeader>
+          <CardContent>
+            <UpcomingEvents events={events} />
+          </CardContent>
+        </Card>
       </div>
 
       <div className="mb-6 grid grid-cols-1 gap-4 lg:grid-cols-3">
@@ -74,10 +135,35 @@ export function SuperAdminDashboard() {
 
         <Card>
           <CardHeader>
-            <CardTitle>Upcoming Events</CardTitle>
+            <CardTitle>District Performance</CardTitle>
           </CardHeader>
-          <CardContent>
-            <UpcomingEvents events={events} />
+          <CardContent className="space-y-4">
+            <div>
+              <p className="mb-2 text-xs font-medium uppercase tracking-wide text-slate-500">Top performers</p>
+              <ul className="space-y-1.5">
+                {leaderboard?.top.map((r, i) => (
+                  <li key={r.regionId} className="flex items-center justify-between text-sm">
+                    <span className="text-slate-700">
+                      {i + 1}. {r.regionName}
+                    </span>
+                    <Badge tone="green">{r.achievementPct}%</Badge>
+                  </li>
+                ))}
+                {!leaderboard?.top.length && <p className="text-xs text-slate-400">No data yet.</p>}
+              </ul>
+            </div>
+            <div>
+              <p className="mb-2 text-xs font-medium uppercase tracking-wide text-slate-500">Needs attention</p>
+              <ul className="space-y-1.5">
+                {leaderboard?.bottom.map((r) => (
+                  <li key={r.regionId} className="flex items-center justify-between text-sm">
+                    <span className="text-slate-700">{r.regionName}</span>
+                    <Badge tone="amber">{r.achievementPct}%</Badge>
+                  </li>
+                ))}
+                {!leaderboard?.bottom.length && <p className="text-xs text-slate-400">Not enough districts yet.</p>}
+              </ul>
+            </div>
           </CardContent>
         </Card>
       </div>

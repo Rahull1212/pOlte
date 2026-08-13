@@ -35,3 +35,54 @@ export function useDistrictProgress(campaignId: string) {
     enabled: Boolean(campaignId),
   });
 }
+
+export interface CampaignWithProgress {
+  id: string;
+  name: string;
+  status: string;
+  priority: string;
+  progressPct: number;
+}
+
+export interface RegionLeaderboardEntry {
+  regionId: string;
+  regionName: string;
+  achievementPct: number;
+}
+
+export interface CadreLeaderboardEntry {
+  id: string;
+  name: string;
+  completed: number;
+  total: number;
+}
+
+export interface AnalyticsOverview {
+  targetAchievementPct: number;
+  totalTarget: number;
+  totalAchieved: number;
+  budgetUtilizationPct: number;
+  totalAllocatedBudget: number;
+  totalSpentBudget: number;
+  taskCompletionPct: number;
+  totalTasks: number;
+  completedTasks: number;
+  overdueTasks: number;
+  openGrievances: number;
+  totalGrievances: number;
+  grievanceResolutionPct: number;
+  pendingExpenses: { count: number; amount: number };
+  campaigns: CampaignWithProgress[];
+  // SUPER_ADMIN only
+  regionLeaderboard?: { top: RegionLeaderboardEntry[]; bottom: RegionLeaderboardEntry[] };
+  // ADMIN only
+  myRegionRank?: { rank: number; of: number; regionName: string } | null;
+  cadreLeaderboard?: CadreLeaderboardEntry[];
+}
+
+export function useAnalyticsOverview() {
+  return useQuery({
+    queryKey: ["analytics", "overview"],
+    queryFn: () => api.get<AnalyticsOverview>("/analytics/overview"),
+  });
+}

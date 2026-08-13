@@ -7,7 +7,17 @@ import { useQueryClient } from "@tanstack/react-query";
 import { clearToken } from "@/lib/auth";
 import { useCurrentUser, ROLE_LABELS } from "@/hooks/use-auth";
 import { NotificationsBell } from "./notifications-bell";
-import { HomeIcon, MegaphoneIcon, CalendarIcon, UsersIcon, SearchIcon, ChevronDownIcon, LogoutIcon } from "./icons";
+import {
+  HomeIcon,
+  MegaphoneIcon,
+  CalendarIcon,
+  UsersIcon,
+  MapPinIcon,
+  SearchIcon,
+  ChevronDownIcon,
+  LogoutIcon,
+  UserCircleIcon,
+} from "./icons";
 
 function initials(name: string) {
   return name
@@ -41,6 +51,9 @@ export function AppShell({ children }: { children: React.ReactNode }) {
     { href: "/events", label: "Events", icon: CalendarIcon },
     ...(user?.role === "SUPER_ADMIN" || user?.role === "ADMIN"
       ? [{ href: "/users", label: user.role === "SUPER_ADMIN" ? "Admins" : "Cadres", icon: UsersIcon }]
+      : []),
+    ...(user?.role === "SUPER_ADMIN" || user?.role === "ADMIN"
+      ? [{ href: "/areas", label: "Areas", icon: MapPinIcon }]
       : []),
   ];
 
@@ -107,9 +120,18 @@ export function AppShell({ children }: { children: React.ReactNode }) {
                 onClick={() => setProfileOpen((v) => !v)}
                 className="flex items-center gap-2 rounded-lg px-2 py-1.5 hover:bg-slate-50"
               >
-                <span className="flex h-8 w-8 items-center justify-center rounded-full bg-brand-100 text-xs font-semibold text-brand-700">
-                  {user ? initials(user.name) : "?"}
-                </span>
+                {user?.profilePicture ? (
+                  // eslint-disable-next-line @next/next/no-img-element
+                  <img
+                    src={user.profilePicture}
+                    alt={user.name}
+                    className="h-8 w-8 rounded-full object-cover"
+                  />
+                ) : (
+                  <span className="flex h-8 w-8 items-center justify-center rounded-full bg-brand-100 text-xs font-semibold text-brand-700">
+                    {user ? initials(user.name) : "?"}
+                  </span>
+                )}
                 <span className="hidden text-left text-sm sm:block">
                   <span className="block font-medium text-slate-800">{user?.name}</span>
                   <span className="block text-xs text-slate-400">{user ? ROLE_LABELS[user.role] : ""}</span>
@@ -123,6 +145,14 @@ export function AppShell({ children }: { children: React.ReactNode }) {
                     <p className="text-sm font-medium text-slate-800">{user?.name}</p>
                     <p className="text-xs text-slate-400">{user ? ROLE_LABELS[user.role] : ""}</p>
                   </div>
+                  <Link
+                    href="/profile"
+                    onClick={() => setProfileOpen(false)}
+                    className="flex w-full items-center gap-2 px-4 py-2 text-left text-sm text-slate-700 hover:bg-slate-50"
+                  >
+                    <UserCircleIcon className="h-4 w-4" />
+                    Profile
+                  </Link>
                   <button
                     onClick={logout}
                     className="flex w-full items-center gap-2 px-4 py-2 text-left text-sm text-red-600 hover:bg-red-50"

@@ -37,6 +37,12 @@ yarn-error.log*
 backend/uploads/
 
 # ============================================================
+# Redis local dump (created when redis-server saves its snapshot to disk)
+# ============================================================
+backend/dump.rdb
+*.rdb
+
+# ============================================================
 # Testing / coverage
 # ============================================================
 coverage/

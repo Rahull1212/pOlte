@@ -1,4 +1,4 @@
-import { Body, Controller, Get, Param, Post, UseGuards } from "@nestjs/common";
+import { Body, Controller, Delete, Get, Param, Patch, Post, UseGuards } from "@nestjs/common";
 import { RegionsService } from "./regions.service";
 import { Roles } from "../common/decorators/roles.decorator";
 import { RolesGuard } from "../common/guards/roles.guard";
@@ -11,9 +11,9 @@ export class RegionsController {
 
   @Post()
   @UseGuards(RolesGuard)
-  @Roles("SUPER_ADMIN")
-  create(@Body() body: { name: string; type: any; parentId?: string }) {
-    return this.regionsService.create(body);
+  @Roles("SUPER_ADMIN", "ADMIN")
+  create(@Body() body: { name: string; type: any; parentId?: string }, @CurrentUser() user: AuthenticatedUser) {
+    return this.regionsService.create(body, user);
   }
 
   @Get()
@@ -26,8 +26,26 @@ export class RegionsController {
     return this.regionsService.findById(id);
   }
 
+  @Patch(":id")
+  @UseGuards(RolesGuard)
+  @Roles("SUPER_ADMIN", "ADMIN")
+  update(
+    @Param("id") id: string,
+    @Body() body: { name?: string; parentId?: string },
+    @CurrentUser() user: AuthenticatedUser,
+  ) {
+    return this.regionsService.update(id, body, user);
+  }
+
   @Get(":id/children")
   children(@Param("id") id: string) {
     return this.regionsService.children(id);
+  }
+
+  @Delete(":id")
+  @UseGuards(RolesGuard)
+  @Roles("SUPER_ADMIN", "ADMIN")
+  remove(@Param("id") id: string, @CurrentUser() user: AuthenticatedUser) {
+    return this.regionsService.remove(id, user);
   }
 }

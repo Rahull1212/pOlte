@@ -1,19 +1,28 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { LoginDto, Role } from "@/lib/shared-types";
+import { Gender, LoginDto, Role } from "@/lib/shared-types";
 import { api } from "@/lib/api-client";
 import { getToken, setRefreshToken, setToken } from "@/lib/auth";
 
 export interface CurrentUser {
   id: string;
   name: string;
+  phone: string;
+  email?: string | null;
+  gender?: Gender | null;
+  profilePicture?: string | null;
   role: Role;
   regionId: string;
+  region?: { name: string; type: string } | null;
+  createdAt: string;
 }
 
 interface LoginResponse {
   accessToken: string;
   refreshToken: string;
-  user: CurrentUser;
+  // Login only returns this minimal shape — the full profile (email,
+  // gender, profilePicture, region, ...) is fetched separately via
+  // useCurrentUser() right after, since /auth/login doesn't select it.
+  user: { id: string; name: string; role: Role; regionId: string };
 }
 
 export function useLogin() {

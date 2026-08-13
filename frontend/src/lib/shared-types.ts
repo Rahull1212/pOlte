@@ -18,6 +18,9 @@ export type Role = (typeof Role)[number];
 export const RegionType = ["STATE", "DISTRICT", "CONSTITUENCY", "MANDAL", "BOOTH"] as const;
 export type RegionType = (typeof RegionType)[number];
 
+export const Gender = ["MALE", "FEMALE", "OTHER", "PREFER_NOT_TO_SAY"] as const;
+export type Gender = (typeof Gender)[number];
+
 export const CampaignStatus = ["DRAFT", "UPCOMING", "ACTIVE", "COMPLETED", "CANCELLED"] as const;
 export type CampaignStatus = (typeof CampaignStatus)[number];
 
@@ -75,6 +78,43 @@ export const loginSchema = z.object({
   password: z.string().min(6),
 });
 export type LoginDto = z.infer<typeof loginSchema>;
+
+export const updateProfileSchema = z.object({
+  name: z.string().min(2).max(100).optional(),
+  email: z.string().email().optional(),
+  gender: z.enum(Gender).optional(),
+});
+export type UpdateProfileDto = z.infer<typeof updateProfileSchema>;
+
+export const changePasswordSchema = z.object({
+  currentPassword: z.string().min(1),
+  newPassword: z.string().min(6),
+});
+export type ChangePasswordDto = z.infer<typeof changePasswordSchema>;
+
+export const requestPhoneChangeSchema = z.object({
+  newPhone: z.string().min(10).max(15),
+  currentPassword: z.string().min(1),
+});
+export type RequestPhoneChangeDto = z.infer<typeof requestPhoneChangeSchema>;
+
+export const confirmPhoneChangeSchema = z.object({
+  newPhone: z.string().min(10).max(15),
+  code: z.string().length(6),
+});
+export type ConfirmPhoneChangeDto = z.infer<typeof confirmPhoneChangeSchema>;
+
+export const forgotPasswordSchema = z.object({
+  phone: z.string().min(10).max(15),
+});
+export type ForgotPasswordDto = z.infer<typeof forgotPasswordSchema>;
+
+export const resetPasswordSchema = z.object({
+  phone: z.string().min(10).max(15),
+  code: z.string().length(6),
+  newPassword: z.string().min(6),
+});
+export type ResetPasswordDto = z.infer<typeof resetPasswordSchema>;
 
 // ============================================================
 // USERS
