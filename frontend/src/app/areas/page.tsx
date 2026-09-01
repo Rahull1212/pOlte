@@ -20,6 +20,19 @@ const TYPE_LABELS: Record<RegionType, string> = {
   BOOTH: "Booth",
 };
 
+// Enforced hierarchy: State -> District -> Mandal -> Booth. Mandal's parent
+// is District (not Constituency) — no entry for STATE since it's the root
+// and can never have a parent. Mirrors REQUIRED_PARENT_TYPE in
+// backend/src/regions/regions.service.ts, which is the actual enforcement;
+// this just keeps the picker from ever offering an area the backend would
+// reject.
+const PARENT_TYPE_FOR: Partial<Record<RegionType, RegionType>> = {
+  DISTRICT: "STATE",
+  CONSTITUENCY: "DISTRICT",
+  MANDAL: "DISTRICT",
+  BOOTH: "MANDAL",
+};
+
 function RegionTree({
   regions,
   parentId,
@@ -251,13 +264,20 @@ export default function AreasPage() {
                       value={form.parentId}
                       onChange={(e) => setForm({ ...form, parentId: e.target.value })}
                     >
-                      <option value="">Select parent...</option>
-                      {regions?.map((r) => (
-                        <option key={r.id} value={r.id}>
-                          {r.name} ({TYPE_LABELS[r.type]})
-                        </option>
-                      ))}
+                      <option value="">Select {TYPE_LABELS[PARENT_TYPE_FOR[form.type]!].toLowerCase()}...</option>
+                      {regions
+                        ?.filter((r) => r.type === PARENT_TYPE_FOR[form.type])
+                        .map((r) => (
+                          <option key={r.id} value={r.id}>
+                            {r.name} ({TYPE_LABELS[r.type]})
+                          </option>
+                        ))}
                     </select>
+                    {regions?.filter((r) => r.type === PARENT_TYPE_FOR[form.type]).length === 0 && (
+                      <p className="mt-1 text-xs text-slate-400">
+                        No {TYPE_LABELS[PARENT_TYPE_FOR[form.type]!].toLowerCase()} areas exist yet — add one first.
+                      </p>
+                    )}
                   </div>
                 )}
                 {createRegion.isError && (
@@ -337,10 +357,24 @@ export default function AreasPage() {
                 </Button>
               </div>
             )}
-            {moving && (
+            {moving && moving.type === "STATE" && (
+              <div className="mb-4 rounded-md border border-amber-200 bg-amber-50 p-3">
+                <p className="text-sm text-amber-800">
+                  <span className="font-medium">{moving.name}</span> is a State — the root of the area hierarchy —
+                  and cannot be moved under anything.
+                </p>
+                <div className="mt-2">
+                  <Button variant="secondary" onClick={() => setMoving(null)}>
+                    Close
+                  </Button>
+                </div>
+              </div>
+            )}
+            {moving && moving.type !== "STATE" && (
               <div className="mb-4 rounded-md border border-brand-100 bg-brand-50 p-3">
                 <p className="mb-2 text-sm text-slate-700">
-                  Move <span className="font-medium">{moving.name}</span> under:
+                  Move <span className="font-medium">{moving.name}</span> ({TYPE_LABELS[moving.type]}) under a{" "}
+                  {TYPE_LABELS[PARENT_TYPE_FOR[moving.type]!]}:
                 </p>
                 <div className="flex items-center gap-2">
                   <select
@@ -348,16 +382,16 @@ export default function AreasPage() {
                     value={moveParentId}
                     onChange={(e) => setMoveParentId(e.target.value)}
                   >
-                    <option value="">No parent (top-level State)</option>
+                    <option value="">Select {TYPE_LABELS[PARENT_TYPE_FOR[moving.type]!].toLowerCase()}...</option>
                     {regions
-                      ?.filter((r) => r.id !== moving.id)
+                      ?.filter((r) => r.type === PARENT_TYPE_FOR[moving.type] && r.id !== moving.id)
                       .map((r) => (
                         <option key={r.id} value={r.id}>
                           {r.name} ({TYPE_LABELS[r.type]})
                         </option>
                       ))}
                   </select>
-                  <Button onClick={saveMove} disabled={updateRegion.isPending}>
+                  <Button onClick={saveMove} disabled={updateRegion.isPending || !moveParentId}>
                     {updateRegion.isPending ? "Moving..." : "Move"}
                   </Button>
                   <Button variant="secondary" onClick={() => setMoving(null)}>

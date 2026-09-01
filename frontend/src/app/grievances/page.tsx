@@ -7,8 +7,9 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input, Label } from "@/components/ui/input";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
-import { useCitizens } from "@/hooks/use-citizens";
-import { useGrievances, useSubmitGrievance, useDecideGrievance } from "@/hooks/use-grievances";
+import { RegionSelect } from "@/components/region-select";
+import { useGrievances, useSubmitGrievance, useDecideGrievance, useDeleteGrievance } from "@/hooks/use-grievances";
+import { ApiError } from "@/lib/api-client";
 import { useCurrentUser } from "@/hooks/use-auth";
 import { GrievanceStatus } from "@/lib/shared-types";
 
@@ -21,12 +22,24 @@ export default function GrievancesPage() {
   const searchParams = useSearchParams();
   const statusFilter = (searchParams.get("status") as GrievanceStatus | null) ?? undefined;
 
-  const { data: citizens } = useCitizens();
   const { data: grievances, isLoading } = useGrievances(statusFilter);
   const submitGrievance = useSubmitGrievance();
   const decide = useDecideGrievance();
-  const [form, setForm] = useState({ citizenId: "", category: "", description: "" });
+  const deleteGrievance = useDeleteGrievance();
+  const [form, setForm] = useState({ regionId: "", category: "", description: "" });
+  const [deleteError, setDeleteError] = useState<string | null>(null);
   const canDecide = user?.role === "SUPER_ADMIN" || user?.role === "ADMIN";
+
+  const handleDelete = (id: string, label: string) => {
+    if (!window.confirm(`Delete this grievance (${label})? This cannot be undone.`)) return;
+    setDeleteError(null);
+    deleteGrievance.mutate(id, {
+      onError: (err) => {
+        const message = err instanceof ApiError ? err.message : "Failed to delete grievance";
+        setDeleteError(message);
+      },
+    });
+  };
 
   const setStatusFilter = (status?: GrievanceStatus) => {
     router.push(status ? `/grievances?status=${status}` : "/grievances");
@@ -36,7 +49,7 @@ export default function GrievancesPage() {
     e.preventDefault();
     submitGrievance.mutate(
       { ...form, photos: [] },
-      { onSuccess: () => setForm({ citizenId: "", category: "", description: "" }) },
+      { onSuccess: () => setForm({ regionId: "", category: "", description: "" }) },
     );
   };
 
@@ -70,21 +83,12 @@ export default function GrievancesPage() {
           <CardContent>
             <form onSubmit={onSubmit} className="space-y-3">
               <div>
-                <Label htmlFor="citizenId">Citizen</Label>
-                <select
-                  id="citizenId"
-                  required
-                  className="w-full rounded-md border border-slate-300 px-3 py-2 text-sm"
-                  value={form.citizenId}
-                  onChange={(e) => setForm({ ...form, citizenId: e.target.value })}
-                >
-                  <option value="">Select citizen...</option>
-                  {citizens?.map((c) => (
-                    <option key={c.id} value={c.id}>
-                      {c.name}
-                    </option>
-                  ))}
-                </select>
+                <Label htmlFor="regionId">Area</Label>
+                <RegionSelect
+                  id="regionId"
+                  value={form.regionId}
+                  onChange={(regionId) => setForm({ ...form, regionId })}
+                />
               </div>
               <div>
                 <Label htmlFor="category">Category</Label>
@@ -123,12 +127,14 @@ export default function GrievancesPage() {
             </CardTitle>
           </CardHeader>
           <CardContent className="space-y-3">
+            {deleteError && <p className="text-xs text-red-600">{deleteError}</p>}
             {grievances?.map((g) => (
               <div key={g.id} className="rounded-md border border-slate-100 p-3">
                 <div className="flex items-start justify-between">
                   <div>
                     <p className="text-sm font-medium text-slate-800">
-                      {g.category} — {g.citizen.name}
+                      {g.category} — {g.region.name}
+                      {g.citizen && <span className="font-normal text-slate-500"> ({g.citizen.name})</span>}
                     </p>
                     <p className="text-xs text-slate-500">{g.description}</p>
                     {g.resolutionNotes && (
@@ -137,19 +143,30 @@ export default function GrievancesPage() {
                   </div>
                   <Badge tone={statusTone[g.status]}>{g.status}</Badge>
                 </div>
-                {canDecide && (g.status === "OPEN" || g.status === "IN_PROGRESS") && (
+                {canDecide && (
                   <div className="mt-2 flex justify-end gap-2">
-                    <Button
-                      variant="secondary"
-                      onClick={() => decide.mutate({ id: g.id, action: "resolve", notes: "Resolved" })}
-                    >
-                      Resolve
-                    </Button>
+                    {(g.status === "OPEN" || g.status === "IN_PROGRESS") && (
+                      <>
+                        <Button
+                          variant="secondary"
+                          onClick={() => decide.mutate({ id: g.id, action: "resolve", notes: "Resolved" })}
+                        >
+                          Resolve
+                        </Button>
+                        <Button
+                          variant="danger"
+                          onClick={() => decide.mutate({ id: g.id, action: "reject", notes: "Rejected" })}
+                        >
+                          Reject
+                        </Button>
+                      </>
+                    )}
                     <Button
                       variant="danger"
-                      onClick={() => decide.mutate({ id: g.id, action: "reject", notes: "Rejected" })}
+                      disabled={deleteGrievance.isPending && deleteGrievance.variables === g.id}
+                      onClick={() => handleDelete(g.id, `${g.category} — ${g.region.name}`)}
                     >
-                      Reject
+                      {deleteGrievance.isPending && deleteGrievance.variables === g.id ? "Deleting..." : "Delete"}
                     </Button>
                   </div>
                 )}

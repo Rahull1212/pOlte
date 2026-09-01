@@ -8,7 +8,8 @@ export interface Grievance {
   description: string;
   status: GrievanceStatus;
   resolutionNotes?: string;
-  citizen: { id: string; name: string; address?: string };
+  citizen?: { id: string; name: string; address?: string } | null;
+  region: { name: string; type: string };
   submittedBy: { id: string; name: string };
   createdAt: string;
 }
@@ -33,6 +34,14 @@ export function useDecideGrievance() {
   return useMutation({
     mutationFn: ({ id, action, notes }: { id: string; action: "resolve" | "reject"; notes: string }) =>
       api.patch(`/grievances/${id}/${action}`, { resolutionNotes: notes }),
+    onSuccess: () => queryClient.invalidateQueries({ queryKey: ["grievances"] }),
+  });
+}
+
+export function useDeleteGrievance() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: (id: string) => api.delete(`/grievances/${id}`),
     onSuccess: () => queryClient.invalidateQueries({ queryKey: ["grievances"] }),
   });
 }

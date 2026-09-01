@@ -1,4 +1,4 @@
-import { Body, Controller, Get, Param, Patch, Post, Query, UseGuards } from "@nestjs/common";
+import { Body, Controller, Delete, Get, Param, Patch, Post, Query, UseGuards } from "@nestjs/common";
 import {
   GrievanceStatus,
   rejectGrievanceSchema,
@@ -55,5 +55,11 @@ export class GrievancesController {
     @CurrentUser() user: AuthenticatedUser,
   ) {
     return this.grievancesService.reject(id, dto.resolutionNotes, user);
+  }
+
+  @Delete(":id")
+  @Roles("SUPER_ADMIN", "ADMIN")
+  remove(@Param("id") id: string, @CurrentUser() user: AuthenticatedUser) {
+    return this.grievancesService.remove(id, user);
   }
 }

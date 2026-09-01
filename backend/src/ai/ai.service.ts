@@ -137,6 +137,34 @@ export class AiService {
     return this.saveInsight(campaignId, "RECOMMENDATION", content);
   }
 
+  /**
+   * Task Intelligence Dashboard's "AI Task Insights" + "Follow-up
+   * requirements" sections — one call, two labeled sections, so the model
+   * only sees the real KPI/cadre-response bundle already computed by
+   * TasksService.getTaskDashboard and never invents a number that isn't in it.
+   */
+  async generateTaskInsight(bundle: {
+    name: string;
+    kpis: Record<string, number>;
+    cadres: { name: string; status: string; acknowledgment?: string; progressPct: number }[];
+  }): Promise<{ insight: string; followUp: string }> {
+    const content = await this.callLLM(
+      "You are a field-operations analyst for a political campaign, reviewing one task's progress. " +
+        "Respond in exactly this format, nothing else:\n" +
+        "INSIGHT: <2-3 factual sentences on how this task is progressing, using only the numbers given>\n" +
+        "FOLLOW-UP: <2-3 concrete next actions for the Admin, based only on the data given>\n" +
+        "Do not invent any numbers, names, or reasons not present in the data.",
+      JSON.stringify(bundle),
+    );
+
+    const insightMatch = content.match(/INSIGHT:\s*([\s\S]*?)(?:\n?FOLLOW-UP:|$)/i);
+    const followUpMatch = content.match(/FOLLOW-UP:\s*([\s\S]*)$/i);
+    return {
+      insight: insightMatch ? insightMatch[1].trim() : content.trim(),
+      followUp: followUpMatch ? followUpMatch[1].trim() : "",
+    };
+  }
+
   private saveInsight(campaignId: string, type: any, content: string, metadata?: Record<string, unknown>) {
     return this.prisma.aIInsight.create({
       data: { campaignId, type, content, metadata: metadata as any },

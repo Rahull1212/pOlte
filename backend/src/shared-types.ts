@@ -30,8 +30,11 @@ export type CampaignPriority = (typeof CampaignPriority)[number];
 export const TaskStatus = ["PENDING", "IN_PROGRESS", "COMPLETED", "OVERDUE", "CANCELLED"] as const;
 export type TaskStatus = (typeof TaskStatus)[number];
 
-export const TaskPriority = ["LOW", "MEDIUM", "HIGH"] as const;
+export const TaskPriority = ["LOW", "MEDIUM", "HIGH", "URGENT"] as const;
 export type TaskPriority = (typeof TaskPriority)[number];
+
+export const TaskAcknowledgment = ["AWAITING", "ACCEPTED", "DECLINED"] as const;
+export type TaskAcknowledgment = (typeof TaskAcknowledgment)[number];
 
 export const ExpenseType = [
   "POSTER_PRINTING",
@@ -60,6 +63,9 @@ export const NotificationType = [
   "GRIEVANCE_SUBMITTED",
   "GRIEVANCE_RESOLVED",
   "EVENT_INVITATION",
+  "TASK_DECLINED",
+  "TASK_PENDING_ALLOCATION",
+  "TASK_ALLOCATED",
 ] as const;
 export type NotificationType = (typeof NotificationType)[number];
 
@@ -208,7 +214,7 @@ export type ApproveBudgetDto = z.infer<typeof approveBudgetSchema>;
 // ============================================================
 
 export const createTaskSchema = z.object({
-  campaignId: z.string().min(1),
+  campaignId: z.string().min(1).optional(),
   allocationId: z.string().optional(),
   name: z.string().min(2).max(150),
   description: z.string().optional(),
@@ -227,6 +233,34 @@ export const updateTaskSchema = z.object({
   remarks: z.string().optional(),
 });
 export type UpdateTaskDto = z.infer<typeof updateTaskSchema>;
+
+// Bulk task creation: one submission fans out to every active Cadre under
+// the selected District(s)/Mandal(s)/Booth(s) — see TasksService.createBatch.
+export const createTaskBatchSchema = z.object({
+  name: z.string().min(2).max(150),
+  objective: z.string().optional(),
+  description: z.string().optional(),
+  additionalDetails: z.string().optional(),
+  remarks: z.string().optional(),
+  deadline: z.coerce.date(),
+  priority: z.enum(TaskPriority).default("MEDIUM"),
+  campaignId: z.string().optional(),
+  regionIds: z.array(z.string().min(1)).min(1, "Select at least one area"),
+  attachmentUrls: z.array(z.string().url()).default([]),
+});
+export type CreateTaskBatchDto = z.infer<typeof createTaskBatchSchema>;
+
+export const acknowledgeTaskSchema = z.object({
+  acknowledgment: z.enum(["ACCEPTED", "DECLINED"]),
+});
+export type AcknowledgeTaskDto = z.infer<typeof acknowledgeTaskSchema>;
+
+// An Admin allocating a Super-Admin-routed batch to their own Cadres — see
+// TasksService.allocateToCadres.
+export const allocateTaskSchema = z.object({
+  regionIds: z.array(z.string().min(1)).min(1, "Select at least one area"),
+});
+export type AllocateTaskDto = z.infer<typeof allocateTaskSchema>;
 
 export const progressUpdateSchema = z.object({
   completedForms: z.number().int().nonnegative().optional(),
@@ -275,6 +309,41 @@ export const createAnnouncementSchema = z.object({
 export type CreateAnnouncementDto = z.infer<typeof createAnnouncementSchema>;
 
 // ============================================================
+// BULK WHATSAPP MESSAGING (via Fyxo Connect)
+// ============================================================
+
+export const BulkCampaignStatus = ["DRAFT", "SENDING", "SENT", "FAILED"] as const;
+export type BulkCampaignStatus = (typeof BulkCampaignStatus)[number];
+
+export const BulkRecipientStatus = ["PENDING", "SENT", "DELIVERED", "READ", "FAILED", "OPTED_OUT"] as const;
+export type BulkRecipientStatus = (typeof BulkRecipientStatus)[number];
+
+// Select/deselect recipients for sending. Omitting both recipientIds and
+// filter means "every recipient in the campaign" (select all / clear all).
+// A filter always matches against the raw District/Constituency/Mandal/
+// Booth text stored on each recipient — see BulkMessagingService.
+export const bulkRecipientSelectionSchema = z.object({
+  selected: z.boolean(),
+  recipientIds: z.array(z.string().min(1)).optional(),
+  filter: z
+    .object({
+      district: z.string().optional(),
+      constituency: z.string().optional(),
+      mandal: z.string().optional(),
+      booth: z.string().optional(),
+    })
+    .optional(),
+});
+export type BulkRecipientSelectionDto = z.infer<typeof bulkRecipientSelectionSchema>;
+
+export const composeBulkMessageSchema = z.object({
+  messageText: z.string().min(1).max(4096),
+  mediaUrl: z.string().url().optional(),
+  templateId: z.string().optional(),
+});
+export type ComposeBulkMessageDto = z.infer<typeof composeBulkMessageSchema>;
+
+// ============================================================
 // CITIZENS
 // ============================================================
 
@@ -291,7 +360,8 @@ export type RegisterCitizenDto = z.infer<typeof registerCitizenSchema>;
 // ============================================================
 
 export const submitGrievanceSchema = z.object({
-  citizenId: z.string().min(1),
+  regionId: z.string().min(1),
+  citizenId: z.string().min(1).optional(),
   category: z.string().min(1),
   description: z.string().min(1),
   photos: z.array(z.string().url()).default([]),
@@ -312,9 +382,19 @@ export type RejectGrievanceDto = z.infer<typeof rejectGrievanceSchema>;
 // EVENTS
 // ============================================================
 
+export const EventRsvpStatus = ["PENDING", "CONFIRMED", "DECLINED"] as const;
+export type EventRsvpStatus = (typeof EventRsvpStatus)[number];
+
 export const createEventSchema = z.object({
   name: z.string().min(2).max(150),
   description: z.string().optional(),
+  objective: z.string().optional(),
+  location: z.string().optional(),
+  organizer: z.string().optional(),
+  instructions: z.string().optional(),
+  remarks: z.string().optional(),
+  expectedAttendees: z.number().int().nonnegative().optional(),
+  attachmentUrls: z.array(z.string().url()).default([]),
   regionId: z.string().min(1),
   startAt: z.coerce.date(),
   endAt: z.coerce.date().optional(),
@@ -331,3 +411,9 @@ export const markAttendanceSchema = z.object({
   attended: z.boolean(),
 });
 export type MarkAttendanceDto = z.infer<typeof markAttendanceSchema>;
+
+export const updateEventRsvpSchema = z.object({
+  userId: z.string().min(1),
+  rsvpStatus: z.enum(["CONFIRMED", "DECLINED"]),
+});
+export type UpdateEventRsvpDto = z.infer<typeof updateEventRsvpSchema>;

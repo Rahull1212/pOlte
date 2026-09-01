@@ -4,28 +4,77 @@ import { PrismaService } from "../prisma/prisma.service";
 import { isRegionWithinScope } from "../common/utils/region-scope.util";
 import { AuthenticatedUser } from "../auth/types";
 
+// The enforced hierarchy is State -> District -> Mandal -> Booth. Mandal's
+// required parent is District (not Constituency) even though the
+// RegionType enum still has a CONSTITUENCY level for legacy/future use —
+// no real data uses it, and every rule the product defines skips straight
+// from District to Mandal. STATE has no entry: it's the root and can never
+// have a parent.
+const REQUIRED_PARENT_TYPE: Partial<Record<RegionType, RegionType>> = {
+  DISTRICT: "STATE",
+  CONSTITUENCY: "DISTRICT",
+  MANDAL: "DISTRICT",
+  BOOTH: "MANDAL",
+};
+
+const TYPE_LABEL: Record<RegionType, string> = {
+  STATE: "State",
+  DISTRICT: "District",
+  CONSTITUENCY: "Constituency",
+  MANDAL: "Mandal",
+  BOOTH: "Booth",
+};
+
 @Injectable()
 export class RegionsService {
   constructor(private readonly prisma: PrismaService) {}
 
   /**
-   * SUPER_ADMIN can create any area anywhere. ADMIN is limited to adding
-   * Booths under a Mandal within their own region subtree — they can't
-   * create new Districts/Mandals or reach outside their own area.
+   * Validates a (type, parentId) pair against the enforced hierarchy —
+   * shared by create() and update() so a Mandal can never end up under
+   * anything but a District, a Booth under anything but a Mandal, etc.,
+   * regardless of role. Returns the parent region so callers that also need
+   * it (e.g. for a scope check) don't have to re-fetch it.
+   */
+  private async assertValidParent(type: RegionType, parentId: string | undefined) {
+    if (type === "STATE") {
+      if (parentId) {
+        throw new BadRequestException("A State is the root of the hierarchy and cannot have a parent area");
+      }
+      return null;
+    }
+
+    if (!parentId) {
+      throw new BadRequestException(`A parent area is required for a ${TYPE_LABEL[type]}`);
+    }
+    const parent = await this.prisma.region.findUnique({ where: { id: parentId } });
+    if (!parent) throw new BadRequestException("Parent area not found");
+
+    const requiredParentType = REQUIRED_PARENT_TYPE[type]!;
+    if (parent.type !== requiredParentType) {
+      throw new BadRequestException(
+        `A ${TYPE_LABEL[type]} must be created directly under a ${TYPE_LABEL[requiredParentType]} — "${parent.name}" is a ${TYPE_LABEL[parent.type]}`,
+      );
+    }
+    return parent;
+  }
+
+  /**
+   * SUPER_ADMIN can create any area anywhere in the hierarchy. ADMIN is
+   * limited to adding Booths under a Mandal within their own region subtree
+   * — they can't create new Districts/Mandals or reach outside their own
+   * area. Every role is bound by the same State->District->Mandal->Booth
+   * parent-type rule via assertValidParent().
    */
   async create(input: { name: string; type: RegionType; parentId?: string }, creator: AuthenticatedUser) {
+    if (creator.role === "ADMIN" && input.type !== "BOOTH") {
+      throw new ForbiddenException("Admins can only add Booths");
+    }
+
+    await this.assertValidParent(input.type, input.parentId);
+
     if (creator.role === "ADMIN") {
-      if (input.type !== "BOOTH") {
-        throw new ForbiddenException("Admins can only add Booths");
-      }
-      if (!input.parentId) {
-        throw new BadRequestException("A parent Mandal is required");
-      }
-      const parent = await this.prisma.region.findUnique({ where: { id: input.parentId } });
-      if (!parent || parent.type !== "MANDAL") {
-        throw new BadRequestException("Booths must be added directly under a Mandal");
-      }
-      const withinScope = await isRegionWithinScope(this.prisma, creator.regionId, input.parentId);
+      const withinScope = await isRegionWithinScope(this.prisma, creator.regionId, input.parentId!);
       if (!withinScope) {
         throw new ForbiddenException("That Mandal is outside your area");
       }
@@ -52,7 +101,7 @@ export class RegionsService {
       if (region.type !== "BOOTH") {
         throw new ForbiddenException("Admins can only rename Booths");
       }
-      if (data.parentId) {
+      if (data.parentId !== undefined) {
         throw new ForbiddenException("Admins cannot move areas");
       }
       const withinScope = await isRegionWithinScope(this.prisma, updater.regionId, id);
@@ -61,14 +110,21 @@ export class RegionsService {
       }
     }
 
-    if (data.parentId) {
+    if (data.parentId !== undefined) {
       if (data.parentId === id) {
         throw new BadRequestException("An area cannot be its own parent");
       }
-      const descendants = await this.descendantIds(id);
-      if (descendants.includes(data.parentId)) {
-        throw new BadRequestException("Cannot move an area under its own descendant");
+      if (data.parentId) {
+        const descendants = await this.descendantIds(id);
+        if (descendants.includes(data.parentId)) {
+          throw new BadRequestException("Cannot move an area under its own descendant");
+        }
       }
+      // A move keeps the region's existing type, so the new parent must
+      // satisfy the exact same State->District->Mandal->Booth rule create()
+      // does (including rejecting an empty/missing parentId for anything
+      // but a State) — otherwise moving would be a backdoor around it.
+      await this.assertValidParent(region.type, data.parentId);
     }
 
     return this.prisma.region.update({ where: { id }, data });

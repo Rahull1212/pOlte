@@ -55,6 +55,13 @@ enum TaskPriority {
   LOW
   MEDIUM
   HIGH
+  URGENT
+}
+
+enum TaskAcknowledgment {
+  AWAITING
+  ACCEPTED
+  DECLINED
 }
 
 enum ExpenseType {
@@ -91,6 +98,9 @@ enum NotificationType {
   GRIEVANCE_SUBMITTED
   GRIEVANCE_RESOLVED
   EVENT_INVITATION
+  TASK_DECLINED
+  TASK_PENDING_ALLOCATION
+  TASK_ALLOCATED
 }
 
 enum AIInsightType {
@@ -146,6 +156,7 @@ model User {
   allocationsOwned    TargetAllocation[] @relation("AllocationOwner")
   tasksAssignedTo     Task[]             @relation("TaskAssignee")
   tasksAssignedBy     Task[]             @relation("TaskAssigner")
+  taskBatchesCreated  TaskBatch[]
   progressUpdates     ProgressUpdate[]
   expenseRequests     ExpenseRequest[]   @relation("ExpenseSubmitter")
   expenseApprovals    ExpenseRequest[]   @relation("ExpenseApprover")
@@ -159,6 +170,7 @@ model User {
   eventParticipation  EventParticipant[]
   whatsAppSession     WhatsAppSession?
   otpCodes            OtpCode[]
+  bulkCampaignsCreated BulkMessageCampaign[]
 }
 
 // Verification codes for self-service flows that need proof the caller
@@ -200,11 +212,12 @@ model Region {
   parent   Region?    @relation("RegionHierarchy", fields: [parentId], references: [id])
   children Region[]   @relation("RegionHierarchy")
 
-  users       User[]
-  allocations TargetAllocation[]
-  citizens    Citizen[]
-  grievances  Grievance[]
-  events      Event[]
+  users          User[]
+  allocations    TargetAllocation[]
+  citizens       Citizen[]
+  grievances     Grievance[]
+  events         Event[]
+  bulkRecipients BulkRecipient[]
 }
 
 // ============================================================
@@ -234,6 +247,7 @@ model Campaign {
   attachments   CampaignAttachment[]
   allocations   TargetAllocation[]
   tasks         Task[]
+  taskBatches   TaskBatch[]
   expenses      ExpenseRequest[]
   announcements Announcement[]
   aiInsights    AIInsight[]
@@ -289,23 +303,62 @@ model TargetAllocation {
 // TASKS & PROGRESS
 // ============================================================
 
+// One "Create Task" submission that fans out to every Cadre under the
+// selected District(s)/Mandal(s)/Booth(s) — one Task row per resolved
+// Cadre (see TasksService.createBatch), grouped here so the Task
+// Intelligence Dashboard can show rollup stats without a single Task
+// trying to represent more than one assignee.
+model TaskBatch {
+  id                String       @id @default(cuid())
+  name              String
+  objective         String?
+  description       String?
+  additionalDetails String?
+  remarks           String?
+  deadline          DateTime
+  priority          TaskPriority @default(MEDIUM)
+  campaignId        String?
+  campaign          Campaign?    @relation(fields: [campaignId], references: [id])
+  targetRegionIds   String[] // the District/Mandal/Booth selection, kept for audit/display
+  attachmentUrls    String[]
+  createdById       String
+  createdBy         User         @relation(fields: [createdById], references: [id])
+  createdAt         DateTime     @default(now())
+  // True only for a SUPER_ADMIN-created batch: no Task rows are created yet —
+  // it's routed to whichever Admins cover targetRegionIds, and each Admin
+  // allocates it to their own Cadres (TasksService.allocateToCadres), which
+  // is what actually creates the Task rows below. An ADMIN-created batch
+  // fans out to Cadres immediately, same as before, so this stays false.
+  awaitingAllocation Boolean     @default(false)
+
+  tasks      Task[]
+  aiInsights AIInsight[]
+}
+
 model Task {
-  id           String            @id @default(cuid())
-  campaignId   String
-  campaign     Campaign          @relation(fields: [campaignId], references: [id])
-  allocationId String?
-  allocation   TargetAllocation? @relation(fields: [allocationId], references: [id])
-  name         String
-  description  String?
-  assignedToId String
-  assignedTo   User              @relation("TaskAssignee", fields: [assignedToId], references: [id])
-  assignedById String
-  assignedBy   User              @relation("TaskAssigner", fields: [assignedById], references: [id])
-  deadline     DateTime
-  priority     TaskPriority      @default(MEDIUM)
-  status       TaskStatus        @default(PENDING)
-  remarks      String?
-  createdAt    DateTime          @default(now())
+  id                String             @id @default(cuid())
+  campaignId        String?
+  campaign          Campaign?          @relation(fields: [campaignId], references: [id])
+  allocationId      String?
+  allocation        TargetAllocation?  @relation(fields: [allocationId], references: [id])
+  batchId           String?
+  batch             TaskBatch?         @relation(fields: [batchId], references: [id])
+  name              String
+  objective         String?
+  description       String?
+  additionalDetails String?
+  assignedToId      String
+  assignedTo        User               @relation("TaskAssignee", fields: [assignedToId], references: [id])
+  assignedById      String
+  assignedBy        User               @relation("TaskAssigner", fields: [assignedById], references: [id])
+  deadline          DateTime
+  priority          TaskPriority       @default(MEDIUM)
+  status            TaskStatus         @default(PENDING)
+  remarks           String?
+  acknowledgment    TaskAcknowledgment @default(AWAITING)
+  acknowledgedAt    DateTime?
+  needsReassignment Boolean            @default(false)
+  createdAt         DateTime           @default(now())
 
   attachments TaskAttachment[]
   progress    ProgressUpdate[]
@@ -400,13 +453,94 @@ model Notification {
 }
 
 // ============================================================
+// BULK WHATSAPP MESSAGING (via Fyxo Connect)
+// ============================================================
+
+enum BulkCampaignStatus {
+  DRAFT // recipients uploaded, message/selection still being set up
+  SENDING // dispatch calls to Fyxo Connect in progress
+  SENT // every selected recipient has been handed off to Fyxo Connect
+  FAILED // the dispatch call to Fyxo Connect failed outright
+}
+
+enum BulkRecipientStatus {
+  PENDING // selected, not yet dispatched
+  SENT // handed off to Fyxo Connect
+  DELIVERED
+  READ
+  FAILED
+  OPTED_OUT
+}
+
+// One Excel upload = one campaign. Recipients are parsed once at upload
+// time (see BulkMessagingService.parseAndValidate) and never re-derived —
+// this row tracks the message content and roll-up counts; BulkRecipient
+// rows below are the actual send list and per-contact delivery state.
+model BulkMessageCampaign {
+  id             String             @id @default(cuid())
+  name           String
+  messageText    String?
+  mediaUrl       String?
+  templateId     String? // optional Fyxo Connect template reference, once that contract is known
+  status         BulkCampaignStatus @default(DRAFT)
+  totalContacts  Int                @default(0)
+  validCount     Int                @default(0)
+  invalidCount   Int                @default(0)
+  duplicateCount Int                @default(0)
+  createdById    String
+  createdBy      User               @relation(fields: [createdById], references: [id])
+  createdAt      DateTime           @default(now())
+  sentAt         DateTime?
+
+  recipients BulkRecipient[]
+
+  @@index([status])
+}
+
+// One row per Excel row. District/Constituency/Mandal/Booth are kept as the
+// raw text from the file (source of truth for filtering — an uploaded
+// contact list won't always match Region spelling exactly) AND
+// best-effort-resolved against the real Region table into regionId, so a
+// row that does match gets the benefit of the real hierarchy where useful.
+model BulkRecipient {
+  id                String               @id @default(cuid())
+  campaignId        String
+  campaign          BulkMessageCampaign  @relation(fields: [campaignId], references: [id], onDelete: Cascade)
+  name              String?
+  phone             String // normalized, digits-only
+  rawPhone          String // exactly as uploaded, for audit/debugging
+  districtName      String?
+  constituencyName  String?
+  mandalName        String?
+  boothName         String?
+  regionId          String?
+  region            Region?              @relation(fields: [regionId], references: [id])
+  isValidPhone      Boolean              @default(true)
+  isDuplicate       Boolean              @default(false)
+  selected          Boolean              @default(true)
+  status            BulkRecipientStatus  @default(PENDING)
+  providerMessageId String? // Fyxo Connect's id for this send, for webhook correlation
+  sentAt            DateTime?
+  deliveredAt       DateTime?
+  readAt            DateTime?
+  failedReason      String?
+  createdAt         DateTime             @default(now())
+
+  @@index([campaignId, status])
+  @@index([campaignId, selected])
+  @@index([providerMessageId])
+}
+
+// ============================================================
 // AI & AUDIT
 // ============================================================
 
 model AIInsight {
   id          String        @id @default(cuid())
-  campaignId  String
-  campaign    Campaign      @relation(fields: [campaignId], references: [id])
+  campaignId  String?
+  campaign    Campaign?     @relation(fields: [campaignId], references: [id])
+  taskBatchId String?
+  taskBatch   TaskBatch?    @relation(fields: [taskBatchId], references: [id])
   type        AIInsightType
   regionId    String?
   content     String
@@ -451,8 +585,8 @@ model Citizen {
 
 model Grievance {
   id              String          @id @default(cuid())
-  citizenId       String
-  citizen         Citizen         @relation(fields: [citizenId], references: [id])
+  citizenId       String?
+  citizen         Citizen?        @relation(fields: [citizenId], references: [id])
   regionId        String
   region          Region          @relation(fields: [regionId], references: [id])
   submittedById   String
@@ -475,29 +609,43 @@ model Grievance {
 // ============================================================
 
 model Event {
-  id          String    @id @default(cuid())
-  name        String
-  description String?
-  regionId    String
-  region      Region    @relation(fields: [regionId], references: [id])
-  startAt     DateTime
-  endAt       DateTime?
-  createdById String
-  createdBy   User      @relation("EventCreator", fields: [createdById], references: [id])
-  createdAt   DateTime  @default(now())
+  id                String    @id @default(cuid())
+  name              String
+  description       String?
+  objective         String?
+  location          String?
+  organizer         String?
+  instructions      String?
+  remarks           String? // "Comments" on the detail page, and "Event Issues/Remarks" on the dashboard
+  expectedAttendees Int?
+  attachmentUrls    String[]  @default([])
+  regionId          String
+  region            Region    @relation(fields: [regionId], references: [id])
+  startAt           DateTime
+  endAt             DateTime?
+  createdById       String
+  createdBy         User      @relation("EventCreator", fields: [createdById], references: [id])
+  createdAt         DateTime  @default(now())
 
   participants EventParticipant[]
 
   @@index([regionId, startAt])
 }
 
+enum EventRsvpStatus {
+  PENDING
+  CONFIRMED
+  DECLINED
+}
+
 model EventParticipant {
-  id          String    @id @default(cuid())
+  id          String          @id @default(cuid())
   eventId     String
-  event       Event     @relation(fields: [eventId], references: [id])
+  event       Event           @relation(fields: [eventId], references: [id])
   userId      String
-  user        User      @relation(fields: [userId], references: [id])
-  attended    Boolean   @default(false)
+  user        User            @relation(fields: [userId], references: [id])
+  rsvpStatus  EventRsvpStatus @default(PENDING)
+  attended    Boolean         @default(false)
   checkedInAt DateTime?
 
   @@unique([eventId, userId])

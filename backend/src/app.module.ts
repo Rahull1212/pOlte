@@ -19,6 +19,7 @@ import { GrievancesModule } from "./grievances/grievances.module";
 import { EventsModule } from "./events/events.module";
 import { WhatsAppModule } from "./whatsapp/whatsapp.module";
 import { AuditModule } from "./audit/audit.module";
+import { BulkMessagingModule } from "./bulk-messaging/bulk-messaging.module";
 import { JwtAuthGuard } from "./common/guards/jwt-auth.guard";
 import { AuditLogInterceptor } from "./common/interceptors/audit-log.interceptor";
 
@@ -43,6 +44,7 @@ import { AuditLogInterceptor } from "./common/interceptors/audit-log.interceptor
     EventsModule,
     WhatsAppModule,
     AuditModule,
+    BulkMessagingModule,
   ],
   providers: [
     { provide: APP_GUARD, useClass: JwtAuthGuard },

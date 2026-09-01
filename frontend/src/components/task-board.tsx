@@ -9,10 +9,11 @@ const columns: { status: Task["status"]; label: string }[] = [
   { status: "OVERDUE", label: "Overdue" },
 ];
 
-const priorityTone: Record<Task["priority"], "slate" | "blue" | "amber"> = {
+const priorityTone: Record<Task["priority"], "slate" | "blue" | "amber" | "red"> = {
   LOW: "slate",
   MEDIUM: "blue",
   HIGH: "amber",
+  URGENT: "red",
 };
 
 export function TaskBoard({ tasks }: { tasks: Task[] }) {

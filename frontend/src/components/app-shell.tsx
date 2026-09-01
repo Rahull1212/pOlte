@@ -13,6 +13,9 @@ import {
   CalendarIcon,
   UsersIcon,
   MapPinIcon,
+  GrievanceIcon,
+  ChartIcon,
+  ChatBubbleIcon,
   SearchIcon,
   ChevronDownIcon,
   LogoutIcon,
@@ -49,11 +52,18 @@ export function AppShell({ children }: { children: React.ReactNode }) {
     { href: "/dashboard", label: "Dashboard", icon: HomeIcon },
     { href: "/campaigns", label: "Campaigns", icon: MegaphoneIcon },
     { href: "/events", label: "Events", icon: CalendarIcon },
+    { href: "/grievances", label: "Grievances", icon: GrievanceIcon },
+    ...(user?.role === "SUPER_ADMIN" || user?.role === "ADMIN"
+      ? [{ href: "/tasks", label: "Tasks", icon: ChartIcon }]
+      : []),
     ...(user?.role === "SUPER_ADMIN" || user?.role === "ADMIN"
       ? [{ href: "/users", label: user.role === "SUPER_ADMIN" ? "Admins" : "Cadres", icon: UsersIcon }]
       : []),
     ...(user?.role === "SUPER_ADMIN" || user?.role === "ADMIN"
       ? [{ href: "/areas", label: "Areas", icon: MapPinIcon }]
+      : []),
+    ...(user?.role === "SUPER_ADMIN"
+      ? [{ href: "/bulk-messages", label: "Bulk Messages", icon: ChatBubbleIcon }]
       : []),
   ];
 

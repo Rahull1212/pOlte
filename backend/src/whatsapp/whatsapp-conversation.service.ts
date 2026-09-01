@@ -92,6 +92,15 @@ export class WhatsAppConversationService {
       return;
     }
 
+    // YES/NO task acknowledgment works from any state — a new task
+    // notification can land while a Cadre is mid-way through something
+    // else, so this can't wait for them to be sitting at a particular menu.
+    const ackMatch = upper.match(/^(?:(\d+)\s+)?(YES|NO)$/);
+    if (ackMatch) {
+      await this.handleAcknowledgmentReply(phone, authedUser, ackMatch[1], ackMatch[2] as "YES" | "NO");
+      return;
+    }
+
     const context = (session.context as SessionContext) ?? {};
 
     try {
@@ -154,6 +163,49 @@ export class WhatsAppConversationService {
         `1. My Tasks\n` +
         `2. Today's Events\n\n` +
         `(Reply MENU anytime to come back here, CANCEL to abort what you're doing.)`,
+    );
+  }
+
+  // ---------- task acknowledgment (YES/NO) ----------
+
+  private async handleAcknowledgmentReply(
+    phone: string,
+    user: AuthenticatedUser,
+    taskIndexRaw: string | undefined,
+    yesNo: "YES" | "NO",
+  ) {
+    const awaiting = await this.tasksService.findAwaitingAcknowledgment(user.id);
+    if (awaiting.length === 0) {
+      await this.whatsAppApi.sendText(phone, "You don't have any tasks awaiting a response right now.");
+      return;
+    }
+
+    let task = awaiting[0];
+    if (awaiting.length > 1) {
+      if (!taskIndexRaw) {
+        const list = awaiting.map((t, i) => `${i + 1}. ${t.name} (due ${new Date(t.deadline).toDateString()})`);
+        await this.whatsAppApi.sendText(
+          phone,
+          `You have ${awaiting.length} tasks awaiting a response:\n${list.join("\n")}\n\n` +
+            `Reply with the number and YES/NO, e.g. "2 YES".`,
+        );
+        return;
+      }
+      const picked = awaiting[Number(taskIndexRaw) - 1];
+      if (!picked) {
+        await this.whatsAppApi.sendText(phone, "That's not one of your pending task numbers. Reply YES or NO to see the list again.");
+        return;
+      }
+      task = picked;
+    }
+
+    const acknowledgment = yesNo === "YES" ? "ACCEPTED" : "DECLINED";
+    await this.tasksService.acknowledge(task.id, acknowledgment, user);
+    await this.whatsAppApi.sendText(
+      phone,
+      acknowledgment === "ACCEPTED"
+        ? `Got it — you've accepted "${task.name}". Reply MENU any time to see your tasks.`
+        : `Got it — you've declined "${task.name}". Your Admin has been notified.`,
     );
   }
 
@@ -368,8 +420,21 @@ export class WhatsAppConversationService {
       return;
     }
 
+    const citizen = await this.prisma.citizen.findUnique({ where: { id: context.citizenId } });
+    if (!citizen) {
+      await this.resetToMain(user.id);
+      await this.sendMainMenu(phone, user.name);
+      return;
+    }
+
     await this.grievancesService.submit(
-      { citizenId: context.citizenId, category: context.category, description: text, photos: context.photos ?? [] },
+      {
+        citizenId: context.citizenId,
+        regionId: citizen.regionId,
+        category: context.category,
+        description: text,
+        photos: context.photos ?? [],
+      },
       user,
     );
     await this.whatsAppApi.sendText(phone, "Grievance submitted. Your Admin has been notified.");

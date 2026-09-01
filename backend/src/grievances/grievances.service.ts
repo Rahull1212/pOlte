@@ -14,13 +14,21 @@ export class GrievancesService {
   ) {}
 
   async submit(dto: SubmitGrievanceDto, user: AuthenticatedUser) {
-    const citizen = await this.prisma.citizen.findUnique({ where: { id: dto.citizenId } });
-    if (!citizen) throw new NotFoundException("Citizen not found");
+    if (user.role !== "SUPER_ADMIN") {
+      const withinScope = await this.regionsService.isWithinScope(user.regionId, dto.regionId);
+      if (!withinScope) throw new ForbiddenException("Region is outside your area");
+    }
+
+    let citizen = null;
+    if (dto.citizenId) {
+      citizen = await this.prisma.citizen.findUnique({ where: { id: dto.citizenId } });
+      if (!citizen) throw new NotFoundException("Citizen not found");
+    }
 
     const grievance = await this.prisma.grievance.create({
       data: {
         citizenId: dto.citizenId,
-        regionId: citizen.regionId,
+        regionId: dto.regionId,
         submittedById: user.id,
         category: dto.category,
         description: dto.description,
@@ -35,7 +43,7 @@ export class GrievancesService {
         userId: submitter.parentUserId,
         type: "GRIEVANCE_SUBMITTED",
         title: "New grievance submitted",
-        message: `${citizen.name}: ${dto.category}`,
+        message: citizen ? `${citizen.name}: ${dto.category}` : dto.category,
         relatedEntityType: "Grievance",
         relatedEntityId: grievance.id,
       });
@@ -52,7 +60,11 @@ export class GrievancesService {
       }
       return this.prisma.grievance.findMany({
         where: { regionId: filters.regionId, status: filters.status },
-        include: { citizen: true, submittedBy: { select: { id: true, name: true } } },
+        include: {
+          citizen: true,
+          region: { select: { name: true, type: true } },
+          submittedBy: { select: { id: true, name: true } },
+        },
         orderBy: { createdAt: "desc" },
       });
     }
@@ -62,7 +74,11 @@ export class GrievancesService {
 
     return this.prisma.grievance.findMany({
       where: { regionId: regionIds ? { in: regionIds } : undefined, status: filters.status },
-      include: { citizen: true, submittedBy: { select: { id: true, name: true } } },
+      include: {
+        citizen: true,
+        region: { select: { name: true, type: true } },
+        submittedBy: { select: { id: true, name: true } },
+      },
       orderBy: { createdAt: "desc" },
     });
   }
@@ -92,6 +108,18 @@ export class GrievancesService {
       where: { id },
       data: { status: "REJECTED", resolutionNotes, resolvedById: user.id, resolvedAt: new Date() },
     });
+  }
+
+  /** SUPER_ADMIN can delete any grievance; ADMIN only within their own area. */
+  async remove(id: string, user: AuthenticatedUser) {
+    const grievance = await this.prisma.grievance.findUnique({ where: { id } });
+    if (!grievance) throw new NotFoundException("Grievance not found");
+    if (user.role !== "SUPER_ADMIN") {
+      const withinScope = await this.regionsService.isWithinScope(user.regionId, grievance.regionId);
+      if (!withinScope) throw new ForbiddenException("Grievance is outside your area");
+    }
+    await this.prisma.grievance.delete({ where: { id } });
+    return { message: "Grievance deleted" };
   }
 
   private async getForDecision(id: string, user: AuthenticatedUser) {
