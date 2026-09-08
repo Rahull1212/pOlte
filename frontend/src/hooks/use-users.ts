@@ -35,3 +35,12 @@ export function useDeactivateUser() {
     onSuccess: () => queryClient.invalidateQueries({ queryKey: ["users"] }),
   });
 }
+
+// Only allowed once an account is already deactivated — see UsersService.remove.
+export function useDeleteUser() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: (id: string) => api.delete(`/users/${id}`),
+    onSuccess: () => queryClient.invalidateQueries({ queryKey: ["users"] }),
+  });
+}

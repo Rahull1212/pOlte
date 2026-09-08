@@ -17,12 +17,22 @@ export interface WhatsAppInboundMessage {
   };
 }
 
+// A delivery-status callback for a message this app sent — distinct from
+// WhatsAppInboundMessage, which is a message a Cadre sent *to* this app.
+export interface WhatsAppStatusUpdate {
+  id: string; // the wamid this status is about — correlates to Task.whatsappMessageId
+  status: "sent" | "delivered" | "read" | "failed" | string;
+  timestamp: string; // unix seconds, as a string
+  recipient_id: string;
+}
+
 export interface WhatsAppWebhookBody {
   entry?: Array<{
     changes?: Array<{
       value?: {
         messaging_product?: string;
         messages?: WhatsAppInboundMessage[];
+        statuses?: WhatsAppStatusUpdate[];
       };
     }>;
   }>;
@@ -36,4 +46,14 @@ export function extractMessages(body: WhatsAppWebhookBody): WhatsAppInboundMessa
     }
   }
   return messages;
+}
+
+export function extractStatuses(body: WhatsAppWebhookBody): WhatsAppStatusUpdate[] {
+  const statuses: WhatsAppStatusUpdate[] = [];
+  for (const entry of body.entry ?? []) {
+    for (const change of entry.changes ?? []) {
+      statuses.push(...(change.value?.statuses ?? []));
+    }
+  }
+  return statuses;
 }

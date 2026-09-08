@@ -36,10 +36,19 @@ export class WhatsAppApiService {
     return `https://graph.facebook.com/${version}`;
   }
 
-  async sendText(toPhone: string, body: string): Promise<void> {
+  /**
+   * Returns whether the send succeeded (or was accepted as a simulated
+   * no-op when unconfigured) so callers that need to persist per-recipient
+   * delivery status — e.g. TasksService.allocateToCadres — can record it,
+   * rather than firing-and-forgetting blind. When real, also returns Meta's
+   * message id (wamid) so a later delivered/read status webhook callback
+   * can be correlated back to whatever this message was for — see
+   * TasksService.handleWhatsappStatusUpdate.
+   */
+  async sendText(toPhone: string, body: string): Promise<{ success: boolean; messageId?: string }> {
     if (!this.isConfigured) {
       this.logger.warn(`[WhatsApp not configured] would send to ${toPhone}: ${body}`);
-      return;
+      return { success: true };
     }
 
     try {
@@ -59,9 +68,13 @@ export class WhatsAppApiService {
       if (!response.ok) {
         const errorBody = await response.text();
         this.logger.error(`WhatsApp send failed (${response.status}): ${errorBody}`);
+        return { success: false };
       }
+      const payload = (await response.json().catch(() => null)) as { messages?: { id: string }[] } | null;
+      return { success: true, messageId: payload?.messages?.[0]?.id };
     } catch (err) {
       this.logger.error(`WhatsApp send threw: ${(err as Error).message}`);
+      return { success: false };
     }
   }
 

@@ -16,6 +16,7 @@ import {
   GrievanceIcon,
   ChartIcon,
   ChatBubbleIcon,
+  PlugIcon,
   SearchIcon,
   ChevronDownIcon,
   LogoutIcon,
@@ -31,7 +32,16 @@ function initials(name: string) {
     .toUpperCase();
 }
 
-export function AppShell({ children }: { children: React.ReactNode }) {
+interface AppShellProps {
+  children: React.ReactNode;
+  // Opt out of <main>'s centered max-w-7xl/padding box for a page that needs
+  // to fill the exact remaining viewport height itself (e.g. an embedded
+  // workspace with its own internal scrolling) rather than growing to fit
+  // whatever content it holds. Every other page keeps the default box.
+  fullBleed?: boolean;
+}
+
+export function AppShell({ children, fullBleed = false }: AppShellProps) {
   const router = useRouter();
   const pathname = usePathname();
   const queryClient = useQueryClient();
@@ -65,6 +75,9 @@ export function AppShell({ children }: { children: React.ReactNode }) {
     ...(user?.role === "SUPER_ADMIN"
       ? [{ href: "/bulk-messages", label: "Bulk Messages", icon: ChatBubbleIcon }]
       : []),
+    ...(user?.role === "SUPER_ADMIN" || user?.role === "ADMIN"
+      ? [{ href: "/fyxo-connect", label: "Fyxo Connect", icon: PlugIcon }]
+      : []),
   ];
 
   const isActive = (href: string) => pathname === href || (href !== "/dashboard" && pathname?.startsWith(href));
@@ -81,7 +94,23 @@ export function AppShell({ children }: { children: React.ReactNode }) {
   };
 
   return (
-    <div className="flex min-h-screen bg-slate-50">
+    <div
+      className={
+        fullBleed
+          // Non-fullBleed pages want min-h-screen — content can legitimately
+          // run longer than one screen and the whole document scrolls, which
+          // is normal and fine. fullBleed pages must never exceed the
+          // viewport at all: min-h-screen only sets a *floor*, not a
+          // ceiling, so if anything inside (see the min-h-0 note below) ever
+          // grows even slightly past 100vh, this root would happily grow
+          // with it — producing a real, scrollable document whose sticky
+          // aside/header stay pinned at their normal position while
+          // everything below that point renders as blank page background.
+          // h-screen + overflow-hidden makes that structurally impossible.
+          ? "flex h-screen overflow-hidden bg-slate-50"
+          : "flex min-h-screen bg-slate-50"
+      }
+    >
       <aside className="sticky top-0 flex h-screen w-60 shrink-0 flex-col border-r border-slate-200 bg-white">
         <div className="flex items-center gap-2 px-5 py-5">
           <span className="flex h-8 w-8 items-center justify-center rounded-lg bg-brand-600 text-sm font-bold text-white">
@@ -108,7 +137,18 @@ export function AppShell({ children }: { children: React.ReactNode }) {
         <div className="border-t border-slate-100 px-5 py-4 text-xs text-slate-400">PoliOS v0.1</div>
       </aside>
 
-      <div className="flex min-w-0 flex-1 flex-col">
+      {/*
+        min-h-0 here is the actual root-cause fix: as a flex item in the
+        outer row, this column's default min-height is "auto", which means
+        flexbox refuses to shrink it below its content's own automatic
+        minimum size — and that computation can walk all the way down
+        through <main>'s flex-1 chain to whatever's inside (an iframe,
+        here), letting the *column* grow taller than the viewport even
+        though every box in the chain below it is correctly told to fill
+        (not exceed) 100%. min-h-0 overrides that default so "flex-1 fills
+        exactly the available space" actually holds all the way down.
+      */}
+      <div className="flex min-h-0 min-w-0 flex-1 flex-col">
         <header className="sticky top-0 z-10 flex items-center justify-between gap-4 border-b border-slate-200 bg-white px-6 py-3">
           <form onSubmit={onSearch} className="max-w-sm flex-1">
             <div className="flex items-center gap-2 rounded-lg border border-slate-200 bg-slate-50 px-3 py-1.5">
@@ -176,7 +216,23 @@ export function AppShell({ children }: { children: React.ReactNode }) {
           </div>
         </header>
 
-        <main className="mx-auto w-full max-w-7xl flex-1 px-6 py-6">{children}</main>
+        <main
+          className={
+            fullBleed
+              // A plain block <main> with flex-1 stretches to fill the
+              // remaining viewport height (the sidebar's h-screen forces
+              // stretch alignment down the tree) but doesn't pass that
+              // height on to its children by default — that's what left a
+              // tall, empty gap under a shorter-than-viewport child before.
+              // flex + min-h-0 here makes <main> a real flex container so a
+              // flex-1 child can actually claim 100% of that space, and
+              // overflow-hidden keeps the page itself from ever scrolling.
+              ? "flex min-h-0 flex-1 flex-col overflow-hidden"
+              : "mx-auto w-full max-w-7xl flex-1 px-6 py-6"
+          }
+        >
+          {children}
+        </main>
       </div>
     </div>
   );

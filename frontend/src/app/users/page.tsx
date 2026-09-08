@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { Suspense, useState } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 import { AppShell } from "@/components/app-shell";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -8,10 +8,23 @@ import { Input, Label } from "@/components/ui/input";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { RegionSelect } from "@/components/region-select";
+import { ConfirmDialog } from "@/components/ui/confirm-dialog";
 import { useCurrentUser, ROLE_LABELS } from "@/hooks/use-auth";
-import { useManagedUsers, useCreateManagedUser, useDeactivateUser } from "@/hooks/use-users";
+import { useManagedUsers, useCreateManagedUser, useDeactivateUser, useDeleteUser } from "@/hooks/use-users";
+import { ApiError } from "@/lib/api-client";
 
+// useSearchParams() opts a page out of static generation unless it's inside
+// a Suspense boundary — `next build` fails without this wrapper (dev mode
+// doesn't enforce it, which is why this only ever showed up in a real build).
 export default function UsersPage() {
+  return (
+    <Suspense fallback={null}>
+      <UsersPageContent />
+    </Suspense>
+  );
+}
+
+function UsersPageContent() {
   const { data: currentUser } = useCurrentUser();
   const router = useRouter();
   const searchParams = useSearchParams();
@@ -24,14 +37,52 @@ export default function UsersPage() {
   const { data: users, isLoading } = useManagedUsers(targetRole);
   const createUser = useCreateManagedUser();
   const deactivate = useDeactivateUser();
+  const deleteUser = useDeleteUser();
   const [form, setForm] = useState({ name: "", phone: "", password: "Password@123", regionId: "" });
+  const [deleteError, setDeleteError] = useState<string | null>(null);
+  // Both destructive actions (deactivate, permanently delete) go through the
+  // same confirm step instead of firing on click — deactivating especially
+  // had no confirmation at all before, and this is where their distinct,
+  // deliberately-worded copy lives.
+  const [confirmTarget, setConfirmTarget] = useState<{ id: string; name: string; action: "deactivate" | "delete" } | null>(null);
+
+  const isCadreForm = targetRole === "CADRE";
 
   const onSubmit = (e: React.FormEvent) => {
     e.preventDefault();
     createUser.mutate(
-      { ...form, role: targetRole },
+      // A Cadre works entirely from WhatsApp and never logs in with a
+      // password — the backend generates one on its own for a Cadre
+      // regardless, so there's nothing meaningful to send here.
+      { ...form, password: isCadreForm ? undefined : form.password, role: targetRole },
       { onSuccess: () => setForm({ name: "", phone: "", password: "Password@123", regionId: "" }) },
     );
+  };
+
+  const roleNoun = ROLE_LABELS[targetRole];
+
+  const runConfirmedAction = () => {
+    if (!confirmTarget) return;
+    setDeleteError(null);
+    if (confirmTarget.action === "deactivate") {
+      deactivate.mutate(confirmTarget.id, {
+        onSuccess: () => setConfirmTarget(null),
+        onError: (err) => {
+          const message = err instanceof ApiError ? err.message : "Failed to deactivate";
+          setDeleteError(`${confirmTarget.name}: ${message}`);
+          setConfirmTarget(null);
+        },
+      });
+    } else {
+      deleteUser.mutate(confirmTarget.id, {
+        onSuccess: () => setConfirmTarget(null),
+        onError: (err) => {
+          const message = err instanceof ApiError ? err.message : "Failed to delete";
+          setDeleteError(`${confirmTarget.name}: ${message}`);
+          setConfirmTarget(null);
+        },
+      });
+    }
   };
 
   return (
@@ -81,14 +132,20 @@ export default function UsersPage() {
                 <Label htmlFor="regionId">Area</Label>
                 <RegionSelect value={form.regionId} onChange={(regionId) => setForm({ ...form, regionId })} />
               </div>
-              <div>
-                <Label htmlFor="password">Temporary password</Label>
-                <Input
-                  id="password"
-                  value={form.password}
-                  onChange={(e) => setForm({ ...form, password: e.target.value })}
-                />
-              </div>
+              {isCadreForm ? (
+                <p className="text-xs text-slate-400">
+                  Cadres work entirely from WhatsApp and never need a password — one isn't asked for here.
+                </p>
+              ) : (
+                <div>
+                  <Label htmlFor="password">Temporary password</Label>
+                  <Input
+                    id="password"
+                    value={form.password}
+                    onChange={(e) => setForm({ ...form, password: e.target.value })}
+                  />
+                </div>
+              )}
               {createUser.isError && <p className="text-xs text-red-600">{(createUser.error as Error).message}</p>}
               <Button type="submit" className="w-full" disabled={createUser.isPending}>
                 {createUser.isPending ? "Creating..." : `Create ${ROLE_LABELS[targetRole]}`}
@@ -105,6 +162,7 @@ export default function UsersPage() {
             </CardTitle>
           </CardHeader>
           <CardContent className="p-0">
+            {deleteError && <p className="px-5 pt-3 text-xs text-red-600">{deleteError}</p>}
             <table className="w-full text-sm">
               <thead className="border-b border-slate-100 text-left text-xs uppercase text-slate-500">
                 <tr>
@@ -131,10 +189,16 @@ export default function UsersPage() {
                       <Badge tone={u.isActive ? "green" : "slate"}>{u.isActive ? "Active" : "Inactive"}</Badge>
                     </td>
                     <td className="px-5 py-2 text-right">
-                      {u.isActive && (
-                        <Button variant="danger" onClick={() => deactivate.mutate(u.id)}>
+                      {u.isActive ? (
+                        <Button variant="danger" onClick={() => setConfirmTarget({ id: u.id, name: u.name, action: "deactivate" })}>
                           Deactivate
                         </Button>
+                      ) : currentUser?.role === "SUPER_ADMIN" ? (
+                        <Button variant="danger" onClick={() => setConfirmTarget({ id: u.id, name: u.name, action: "delete" })}>
+                          Permanently Delete
+                        </Button>
+                      ) : (
+                        <span className="text-xs text-slate-400">Ask a Super Admin to permanently delete</span>
                       )}
                     </td>
                   </tr>
@@ -151,6 +215,30 @@ export default function UsersPage() {
           </CardContent>
         </Card>
       </div>
+
+      {confirmTarget?.action === "deactivate" && (
+        <ConfirmDialog
+          title={`Deactivate ${roleNoun}?`}
+          message={`This will deactivate the ${roleNoun.toLowerCase()} and prevent them from receiving new assignments. Their existing assignments, reports, history, and records will be preserved.`}
+          confirmLabel={deactivate.isPending ? "Deactivating…" : "Deactivate"}
+          destructive
+          isPending={deactivate.isPending}
+          onConfirm={runConfirmedAction}
+          onCancel={() => setConfirmTarget(null)}
+        />
+      )}
+
+      {confirmTarget?.action === "delete" && (
+        <ConfirmDialog
+          title={`Permanently delete "${confirmTarget.name}"?`}
+          message="This will permanently remove the account and cannot be undone. Their phone number will become available for reuse."
+          confirmLabel={deleteUser.isPending ? "Deleting…" : "Permanently Delete"}
+          destructive
+          isPending={deleteUser.isPending}
+          onConfirm={runConfirmedAction}
+          onCancel={() => setConfirmTarget(null)}
+        />
+      )}
     </AppShell>
   );
 }

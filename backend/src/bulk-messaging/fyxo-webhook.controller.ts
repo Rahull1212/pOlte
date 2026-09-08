@@ -1,25 +1,24 @@
-import { Body, Controller, HttpCode, Logger, Post } from "@nestjs/common";
+import { Controller, Headers, HttpCode, Logger, Post, Req, UnauthorizedException } from "@nestjs/common";
+import type { RawBodyRequest } from "@nestjs/common";
+import type { Request } from "express";
 import { Public } from "../common/decorators/public.decorator";
 import { BulkMessagingService } from "./bulk-messaging.service";
+import { verifyFyxoSignature } from "../fyxo-agent/verify-signature.util";
 
 /**
- * Receives delivery-status callbacks from Fyxo Connect. Must be @Public() —
- * Fyxo Connect calls this directly, it has no PoliOS JWT to present.
+ * Receives delivery-status callbacks from Fyxo Connect for bulk-message
+ * recipients. Must be @Public() — Fyxo Connect calls this directly, it has
+ * no PoliOS JWT to present.
  *
- * ============================================================
- * CONTRACT NOT YET CONFIRMED. This accepts a best-guess generic shape:
- *   { messageId | message_id | id: string,
- *     status | event: "sent" | "delivered" | "read" | "failed" | "opted_out",
- *     timestamp | time | updatedAt?: string }
- * and tries a few common field-name spellings so it has the best chance of
- * working unmodified — but until Fyxo Connect's real webhook payload is
- * confirmed, treat this as a starting point, not a verified contract.
- *
- * Also NOT implemented: verifying the call actually came from Fyxo Connect
- * (e.g. a signature header). Do not point Fyxo Connect at this endpoint in
- * production before that's addressed — same class of gap already flagged
- * for the Meta WhatsApp webhook (see docs/ARC-007).
- * ============================================================
+ * Confirmed contract (API.md §10): every event arrives as
+ *   { event: "message.sent" | "message.delivered" | "message.read" |
+ *             "message.failed" | "contact.opted_out" | ...,
+ *     sentAt: string,
+ *     data: { messageId: string, waId: string } }
+ * signed via x-fyxo-signature — see verifyFyxoSignature. FyxoAgentWebhookController
+ * uses the same secret/header/algorithm for the task-assignment channel;
+ * this is a second, independent endpoint for the bulk-messaging channel
+ * (matches the codebase's existing separation of the two features).
  */
 @Controller("fyxo-connect")
 export class FyxoWebhookController {
@@ -30,18 +29,32 @@ export class FyxoWebhookController {
   @Public()
   @Post("webhook")
   @HttpCode(200)
-  async receive(@Body() body: Record<string, unknown>) {
-    const messageId = (body.messageId ?? body.message_id ?? body.id) as string | undefined;
-    const status = (body.status ?? body.event) as string | undefined;
-    const timestamp = (body.timestamp ?? body.time ?? body.updatedAt) as string | undefined;
+  async receive(
+    @Req() req: RawBodyRequest<Request>,
+    @Headers("x-fyxo-signature") signature: string | undefined,
+  ) {
+    const secret = process.env.FYXO_WEBHOOK_SECRET;
+    if (secret) {
+      if (!req.rawBody || !verifyFyxoSignature(req.rawBody, signature, secret)) {
+        throw new UnauthorizedException("Invalid Fyxo signature");
+      }
+    } else {
+      this.logger.warn("FYXO_WEBHOOK_SECRET not set — accepting Fyxo Connect webhook without signature verification");
+    }
 
-    if (!messageId || !status) {
-      this.logger.warn(`Fyxo Connect webhook: payload missing messageId/status — ${JSON.stringify(body)}`);
+    const body = (req.body ?? {}) as Record<string, unknown>;
+    const data = (body.data ?? {}) as Record<string, unknown>;
+    const messageId = (data.messageId ?? data.message_id ?? data.id ?? body.messageId ?? body.id) as string | undefined;
+    const event = (body.event ?? body.status) as string | undefined;
+    const timestamp = (body.sentAt ?? body.timestamp ?? body.time ?? body.updatedAt) as string | undefined;
+
+    if (!messageId || !event) {
+      this.logger.warn(`Fyxo Connect webhook: payload missing data.messageId/event — ${JSON.stringify(body)}`);
       return { received: true, applied: false };
     }
 
     try {
-      const applied = await this.bulkMessagingService.handleStatusWebhook(messageId, status, timestamp);
+      const applied = await this.bulkMessagingService.handleStatusWebhook(messageId, event, timestamp);
       return { received: true, applied };
     } catch (err) {
       this.logger.error(`Failed to process Fyxo Connect webhook: ${(err as Error).message}`);

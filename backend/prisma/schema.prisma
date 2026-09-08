@@ -171,6 +171,7 @@ model User {
   whatsAppSession     WhatsAppSession?
   otpCodes            OtpCode[]
   bulkCampaignsCreated BulkMessageCampaign[]
+  fieldReports        FieldReport[]      @relation("FieldReportCadre")
 }
 
 // Verification codes for self-service flows that need proof the caller
@@ -335,35 +336,72 @@ model TaskBatch {
   aiInsights AIInsight[]
 }
 
+enum WhatsappDeliveryStatus {
+  PENDING
+  SENT
+  DELIVERED
+  READ
+  FAILED
+}
+
 model Task {
-  id                String             @id @default(cuid())
+  id                String                 @id @default(cuid())
   campaignId        String?
-  campaign          Campaign?          @relation(fields: [campaignId], references: [id])
+  campaign          Campaign?              @relation(fields: [campaignId], references: [id])
   allocationId      String?
-  allocation        TargetAllocation?  @relation(fields: [allocationId], references: [id])
+  allocation        TargetAllocation?      @relation(fields: [allocationId], references: [id])
   batchId           String?
-  batch             TaskBatch?         @relation(fields: [batchId], references: [id])
+  batch             TaskBatch?             @relation(fields: [batchId], references: [id])
   name              String
   objective         String?
   description       String?
   additionalDetails String?
   assignedToId      String
-  assignedTo        User               @relation("TaskAssignee", fields: [assignedToId], references: [id])
+  assignedTo        User                   @relation("TaskAssignee", fields: [assignedToId], references: [id])
   assignedById      String
-  assignedBy        User               @relation("TaskAssigner", fields: [assignedById], references: [id])
+  assignedBy        User                   @relation("TaskAssigner", fields: [assignedById], references: [id])
   deadline          DateTime
-  priority          TaskPriority       @default(MEDIUM)
-  status            TaskStatus         @default(PENDING)
+  priority          TaskPriority           @default(MEDIUM)
+  status            TaskStatus             @default(PENDING)
   remarks           String?
-  acknowledgment    TaskAcknowledgment @default(AWAITING)
+  acknowledgment    TaskAcknowledgment     @default(AWAITING)
   acknowledgedAt    DateTime?
-  needsReassignment Boolean            @default(false)
-  createdAt         DateTime           @default(now())
+  needsReassignment Boolean                @default(false)
+  // Per-Cadre WhatsApp delivery outcome for this allocation — set when
+  // allocateToCadres() sends the assignment message, retried independently
+  // via retryWhatsapp() if it failed. Deliberately lives on Task (one row
+  // per assigned Cadre) rather than a separate table, since Task already
+  // *is* the per-Cadre allocation record. whatsappMessageId correlates
+  // Meta's delivered/read status webhook callbacks back to this row (see
+  // WhatsAppWebhookController + TasksService.handleWhatsappStatusUpdate).
+  whatsappStatus    WhatsappDeliveryStatus @default(PENDING)
+  whatsappMessageId String?
+  // Correlates a Fyxo-sent interactive assignment message's delivery-status
+  // webhook back to this row — distinct from whatsappMessageId (Meta's
+  // wamid) since a Task can only have been sent through one channel or the
+  // other for its assignment message, never both (see NotificationsService).
+  fyxoMessageId     String?
+  // Which Fyxo template the assignment message actually went out as (e.g.
+  // "polios") — kept alongside fyxoMessageId so a later webhook-driven
+  // interaction (a button tap) can be traced back to exactly what was sent,
+  // and so this stays meaningful once more than one approved template exists.
+  fyxoTemplateName  String?
+  whatsappSentAt    DateTime?
+  deliveredAt       DateTime?
+  readAt            DateTime?
+  // First time this Task's progress hit 100% — set once, kept stable across
+  // any later re-submission, so "average completion time" reflects the
+  // actual first completion rather than a resubmit timestamp.
+  completedAt       DateTime?
+  createdAt         DateTime               @default(now())
 
-  attachments TaskAttachment[]
-  progress    ProgressUpdate[]
+  attachments  TaskAttachment[]
+  progress     ProgressUpdate[]
+  fieldReports FieldReport[]
 
   @@index([assignedToId, status])
+  @@index([whatsappMessageId])
+  @@index([fyxoMessageId])
 }
 
 model TaskAttachment {
@@ -379,8 +417,12 @@ model ProgressUpdate {
   id                   String   @id @default(cuid())
   taskId               String
   task                 Task     @relation(fields: [taskId], references: [id])
-  cadreId              String
-  cadre                User     @relation(fields: [cadreId], references: [id])
+  // Optional (not required) so a field report survives its Cadre being
+  // deleted — the report content is real field data, not the deleted
+  // account's property, and reassigning it to whoever did the deleting
+  // would misattribute who actually did the work. See UsersService.remove().
+  cadreId              String?
+  cadre                User?    @relation(fields: [cadreId], references: [id])
   completedForms       Int?
   meetingsConducted    Int?
   houseVisits          Int?
@@ -550,8 +592,12 @@ model AIInsight {
 
 model AuditLog {
   id         String   @id @default(cuid())
-  userId     String
-  user       User     @relation(fields: [userId], references: [id])
+  // Optional so an audit entry survives its actor being deleted — an audit
+  // log records a historical fact about who did something; reassigning
+  // that FK to whoever performed the deletion would falsify the record
+  // instead of preserving it. See UsersService.remove().
+  userId     String?
+  user       User?    @relation(fields: [userId], references: [id])
   action     String
   entityType String
   entityId   String
@@ -649,4 +695,102 @@ model EventParticipant {
   checkedInAt DateTime?
 
   @@unique([eventId, userId])
+}
+
+// ============================================================
+// FIELD INTELLIGENCE (WhatsApp/AI agent layer, via Fyxo Connect)
+// ============================================================
+
+enum FieldReportSource {
+  CADRE_VOICE_REPORT
+  CADRE_TEXT_REPORT
+  CADRE_PHOTO_REPORT
+  CADRE_DOCUMENT_REPORT
+}
+
+// SUBMITTED -> NEEDS_REVIEW (low-confidence extraction) or straight to
+// VERIFIED once an Admin has looked at it. Deliberately NOT modeled as a
+// new Task.status value — Task's existing status/acknowledgment enums are
+// read by every dashboard already built; this layers the verification
+// workflow on the FieldReport itself instead of widening Task's enum.
+enum FieldReportReviewStatus {
+  SUBMITTED
+  NEEDS_REVIEW
+  VERIFIED
+}
+
+// One row per piece of unstructured field intelligence (voice/text/photo/
+// document) a Cadre sends on WhatsApp, produced by FieldIntelligenceAgent.
+// taskId is nullable — a Cadre can send a field report that isn't tied to
+// any specific assignment (e.g. an unprompted issue report).
+model FieldReport {
+  id                 String                   @id @default(cuid())
+  taskId             String?
+  task               Task?                    @relation(fields: [taskId], references: [id])
+  // Optional for the same reason as ProgressUpdate.cadreId — preserve the
+  // report itself without misattributing it if the Cadre is later deleted.
+  cadreId            String?
+  cadre              User?                    @relation("FieldReportCadre", fields: [cadreId], references: [id])
+  source             FieldReportSource
+  rawMediaUrl        String?
+  originalTranscript String?
+  detectedLanguage   String?
+  normalizedText     String?
+  // Structured extraction, e.g. { region, householdsVisited, ... } — shape
+  // varies by report content, so JSON rather than fixed columns.
+  extractedData      Json?
+  // Array of { category, affectedHouseholds?, duration?, confidence, ... }
+  issues             Json?
+  // Overall extraction confidence (0-1). Individual field confidences live
+  // inside extractedData/issues themselves (see Part 16 of the spec).
+  confidence         Float?
+  reviewStatus       FieldReportReviewStatus @default(SUBMITTED)
+  evidenceUrls       String[]                @default([])
+  createdAt          DateTime                @default(now())
+
+  @@index([taskId])
+  @@index([cadreId])
+  @@index([reviewStatus])
+}
+
+// Dedup for inbound Fyxo webhook deliveries — Fyxo (like most webhook
+// senders) may redeliver the same event on retry; the delivery id is the
+// primary key so a second delivery of the same event is a harmless no-op
+// insert failure the processor treats as "already handled".
+model FyxoWebhookEvent {
+  id          String    @id
+  eventType   String
+  // The exact JSON body Fyxo sent, kept for debugging an interaction whose
+  // shape isn't fully confirmed yet (e.g. a template button tap) — without
+  // this, a payload that arrives while something downstream is broken (the
+  // job queue, a parser bug) is gone forever the moment this row is written.
+  rawBody     Json?
+  receivedAt  DateTime  @default(now())
+  processedAt DateTime?
+}
+
+// Structured trace for every WhatsApp/AI agent operation (Part 27 of the
+// spec) — which agent/tool ran, for which Cadre/assignment, with what
+// confidence, so an Admin (or a future debugging session) can reconstruct
+// exactly what the AI did and why, without re-reading raw LLM output.
+model AgentActivityLog {
+  id             String   @id @default(cuid())
+  correlationId  String
+  agentName      String
+  toolName       String?
+  userId         String?
+  cadreId        String?
+  taskId         String?
+  conversationId String?
+  messageId      String?
+  intent         String?
+  confidence     Float?
+  model          String?
+  promptVersion  String?
+  input          Json?
+  output         Json?
+  createdAt      DateTime @default(now())
+
+  @@index([correlationId])
+  @@index([cadreId, createdAt])
 }

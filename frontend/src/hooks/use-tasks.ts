@@ -1,5 +1,5 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { CreateTaskBatchDto, CreateTaskDto, ProgressUpdateDto } from "@/lib/shared-types";
+import { CreateTaskBatchDto, CreateTaskDto, ProgressUpdateDto, WhatsappDeliveryStatus } from "@/lib/shared-types";
 import { api } from "@/lib/api-client";
 import { getToken } from "@/lib/auth";
 
@@ -19,7 +19,18 @@ export interface Task {
   assignedTo: { id: string; name: string };
 }
 
-export type TaskSummaryStatus = "PENDING" | "IN_PROGRESS" | "COMPLETED" | "OVERDUE" | "NEEDS_ATTENTION" | "AWAITING_ALLOCATION";
+export type TaskSummaryStatus =
+  | "PENDING"
+  | "IN_PROGRESS"
+  | "COMPLETED"
+  | "OVERDUE"
+  | "NEEDS_ATTENTION"
+  | "AWAITING_ALLOCATION"
+  // Every assigned Cadre was removed from this task-creation unit (see
+  // useRemoveTaskAssignee) — distinct from an individual member's own
+  // per-row "CANCELLED" status below, which the batch rollup already
+  // collapses into this when everyone's been removed.
+  | "CANCELLED";
 
 export interface TaskListItem {
   id: string;
@@ -47,7 +58,17 @@ export interface TaskDetail {
   districts: string[];
   mandals: string[];
   booths: string[];
-  assignedMembers: { id: string; name: string; area: string }[];
+  assignedMembers: {
+    id: string;
+    // The Cadre's own Task row id — target this with useRemoveTaskAssignee(),
+    // not the batch/task-detail id above.
+    taskId: string;
+    name: string;
+    area: string;
+    whatsappStatus: "PENDING" | "SENT" | "DELIVERED" | "READ" | "FAILED";
+    fyxoTemplateName: string | null;
+    status: Task["status"];
+  }[];
   deadline: string;
   priority: Task["priority"];
   attachmentUrls: string[];
@@ -60,11 +81,27 @@ export interface TaskDashboardCadre {
   taskId: string;
   name: string;
   area: string;
+  mandal: string | null;
   status: Task["status"];
   acknowledgment: Task["acknowledgment"];
   acknowledgedAt: string | null;
   needsReassignment: boolean;
   progressPct: number;
+  whatsappStatus: WhatsappDeliveryStatus;
+  whatsappSentAt: string | null;
+  lastActivityAt: string | null;
+}
+
+export interface TaskProgressFunnelStage {
+  stage: string;
+  count: number;
+}
+
+export interface TaskTimelineEvent {
+  type: "ALLOCATED" | "WHATSAPP_SENT" | "WHATSAPP_DELIVERED" | "WHATSAPP_READ" | "RESPONDED" | "PROGRESS_UPDATE" | "COMPLETED";
+  cadreName: string;
+  at: string;
+  detail?: string;
 }
 
 export interface TaskDashboard {
@@ -74,6 +111,10 @@ export interface TaskDashboard {
   remarks?: string | null;
   kpis: {
     totalAssigned: number;
+    // Cadres removed from this task (see useRemoveTaskAssignee) — already
+    // excluded from every other kpis field below and from totalAssigned
+    // itself, kept here only so a removal isn't invisible on the dashboard.
+    cancelled: number;
     accepted: number;
     declined: number;
     noResponse: number;
@@ -83,13 +124,21 @@ export interface TaskDashboard {
     completed: number;
     overdue: number;
     avgProgressPct: number;
+    whatsappSent: number;
+    whatsappDelivered: number;
+    whatsappRead: number;
+    whatsappFailed: number;
+    responded: number;
   };
   cadres: TaskDashboardCadre[];
   dailyProgress: { date: string; updatesSubmitted: number; avgCompletionPct: number }[];
+  progressFunnel: TaskProgressFunnelStage[];
+  timeline: TaskTimelineEvent[];
 }
 
 export interface TaskInsights {
   insight: string;
+  risks: string;
   followUp: string;
   generatedAt?: string;
 }
@@ -175,6 +224,18 @@ export function useTaskDetail(id: string) {
   });
 }
 
+// taskId is the Cadre's own Task row id (TaskDetail.assignedMembers[].taskId),
+// not the batch/task-detail id in the URL — same convention as retry-whatsapp.
+export function useRemoveTaskAssignee() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: (taskId: string) => api.delete(`/tasks/${taskId}/assignee`),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["tasks"] });
+    },
+  });
+}
+
 export function useTaskDashboard(id: string) {
   return useQuery({
     queryKey: ["tasks", id, "dashboard"],
@@ -199,6 +260,13 @@ export function useGenerateTaskInsights(id: string) {
   });
 }
 
+// "Ask AI" scoped to exactly this one task — answers using only this task's own data.
+export function useAskAboutTask(id: string) {
+  return useMutation({
+    mutationFn: (question: string) => api.post<{ answer: string }>(`/tasks/${id}/ask`, { question }),
+  });
+}
+
 export function usePendingAllocationTasks(enabled = true) {
   return useQuery({
     queryKey: ["tasks", "pending-allocation"],
@@ -207,13 +275,30 @@ export function usePendingAllocationTasks(enabled = true) {
   });
 }
 
+export interface AllocationResult {
+  cadreCount: number;
+  whatsappFailedCount: number;
+  allocated: { taskId: string; cadreId: string; name: string; whatsappStatus: "SENT" | "FAILED" }[];
+}
+
 export function useAllocateTask(id: string) {
   const queryClient = useQueryClient();
   return useMutation({
-    mutationFn: (regionIds: string[]) => api.post<{ cadreCount: number }>(`/tasks/${id}/allocate`, { regionIds }),
+    mutationFn: (input: { regionIds: string[]; cadreIds: string[] }) =>
+      api.post<AllocationResult>(`/tasks/${id}/allocate`, input),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["tasks"] });
     },
+  });
+}
+
+// taskId here is one Cadre's own Task row (from a dashboard's cadres[]),
+// not the batch id — retrying is a per-Cadre delivery concern.
+export function useRetryWhatsapp() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: (taskId: string) => api.post<{ whatsappStatus: WhatsappDeliveryStatus }>(`/tasks/${taskId}/retry-whatsapp`),
+    onSuccess: () => queryClient.invalidateQueries({ queryKey: ["tasks"] }),
   });
 }
 

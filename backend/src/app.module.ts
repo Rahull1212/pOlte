@@ -20,6 +20,7 @@ import { EventsModule } from "./events/events.module";
 import { WhatsAppModule } from "./whatsapp/whatsapp.module";
 import { AuditModule } from "./audit/audit.module";
 import { BulkMessagingModule } from "./bulk-messaging/bulk-messaging.module";
+import { FyxoAgentModule } from "./fyxo-agent/fyxo-agent.module";
 import { JwtAuthGuard } from "./common/guards/jwt-auth.guard";
 import { AuditLogInterceptor } from "./common/interceptors/audit-log.interceptor";
 
@@ -45,6 +46,7 @@ import { AuditLogInterceptor } from "./common/interceptors/audit-log.interceptor
     WhatsAppModule,
     AuditModule,
     BulkMessagingModule,
+    FyxoAgentModule,
   ],
   providers: [
     { provide: APP_GUARD, useClass: JwtAuthGuard },

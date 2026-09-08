@@ -7,8 +7,10 @@ export interface AuditEntry {
   action: string;
   entityType: string;
   entityId: string;
+  // Null when the actor's account has since been deleted (see
+  // UsersService.remove()) — the log entry itself is deliberately kept.
   userName: string;
-  userRole: Role;
+  userRole: Role | null;
   createdAt: string;
 }
 

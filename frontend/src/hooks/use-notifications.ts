@@ -8,6 +8,8 @@ export interface AppNotification {
   message: string;
   isRead: boolean;
   createdAt: string;
+  relatedEntityType?: string | null;
+  relatedEntityId?: string | null;
 }
 
 export function useNotifications() {

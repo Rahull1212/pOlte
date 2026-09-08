@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useRef } from "react";
+import { Suspense, useEffect, useRef } from "react";
 import Link from "next/link";
 import { useSearchParams } from "next/navigation";
 import { AppShell } from "@/components/app-shell";
@@ -11,7 +11,18 @@ import { useUiStore } from "@/store/ui-store";
 
 const STATUS_OPTIONS = ["ACTIVE", "UPCOMING", "COMPLETED", "DRAFT", "CANCELLED"];
 
+// useSearchParams() opts a page out of static generation unless it's inside
+// a Suspense boundary — `next build` fails without this wrapper (dev mode
+// doesn't enforce it, which is why this only ever showed up in a real build).
 export default function CampaignsPage() {
+  return (
+    <Suspense fallback={null}>
+      <CampaignsPageContent />
+    </Suspense>
+  );
+}
+
+function CampaignsPageContent() {
   const { campaignFilter, setCampaignFilter } = useUiStore();
   const searchParams = useSearchParams();
   const appliedUrlFilter = useRef(false);

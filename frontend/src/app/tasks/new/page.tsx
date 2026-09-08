@@ -10,6 +10,8 @@ import { RegionMultiSelect, isRegionWithinScope } from "@/components/region-mult
 import { useCreateTaskBatch, useUploadTaskAttachments } from "@/hooks/use-tasks";
 import { useCampaigns } from "@/hooks/use-campaigns";
 import { useRegions } from "@/hooks/use-regions";
+import { useCurrentUser } from "@/hooks/use-auth";
+import { useManagedUsers } from "@/hooks/use-users";
 import { TaskPriority } from "@/lib/shared-types";
 
 const PRIORITY_LABELS: Record<TaskPriority, string> = {
@@ -21,8 +23,13 @@ const PRIORITY_LABELS: Record<TaskPriority, string> = {
 
 export default function CreateTaskPage() {
   const router = useRouter();
+  const { data: currentUser } = useCurrentUser();
   const { data: campaigns } = useCampaigns();
   const { data: regions } = useRegions();
+  // Only an Admin creating a task sends straight to Cadres, so only an
+  // Admin can narrow that down to specific Cadres — a Super Admin's batch
+  // routes to Admins, not Cadres, so per-Cadre picking doesn't apply there.
+  const { data: myCadres } = useManagedUsers(currentUser?.role === "ADMIN" ? "CADRE" : undefined);
   const createBatch = useCreateTaskBatch();
   const uploadAttachments = useUploadTaskAttachments();
 
@@ -30,6 +37,7 @@ export default function CreateTaskPage() {
   const [districtIds, setDistrictIds] = useState<string[]>([]);
   const [mandalIds, setMandalIds] = useState<string[]>([]);
   const [boothIds, setBoothIds] = useState<string[]>([]);
+  const [cadreIds, setCadreIds] = useState<string[]>([]);
   const [objective, setObjective] = useState("");
   const [description, setDescription] = useState("");
   const [deadline, setDeadline] = useState("");
@@ -41,7 +49,13 @@ export default function CreateTaskPage() {
   const [result, setResult] = useState<{ name: string; cadreCount: number; awaitingAllocation: boolean } | null>(null);
   const [formError, setFormError] = useState<string | null>(null);
 
-  const regionIds = [...districtIds, ...mandalIds, ...boothIds];
+  // An Admin manages exactly one area (their own regionId) — the District/
+  // Mandal/Booth drill-down exists so a Super Admin can route a task to
+  // areas they don't personally sit in, which doesn't apply to an Admin.
+  // For an Admin, the target area is just their own region; they narrow who
+  // gets it via the Cadre checklist below instead.
+  const isAdmin = currentUser?.role === "ADMIN";
+  const regionIds = isAdmin ? (currentUser?.regionId ? [currentUser.regionId] : []) : [...districtIds, ...mandalIds, ...boothIds];
 
   const byId = useMemo(() => new Map((regions ?? []).map((r) => [r.id, r])), [regions]);
 
@@ -64,12 +78,16 @@ export default function CreateTaskPage() {
     setBoothIds((prev) => prev.filter((id) => isRegionWithinScope(id, mandalSet, byId)));
   };
 
+  const toggleCadre = (id: string) => {
+    setCadreIds((prev) => (prev.includes(id) ? prev.filter((c) => c !== id) : [...prev, id]));
+  };
+
   const onSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     setFormError(null);
 
     if (regionIds.length === 0) {
-      setFormError("Select at least one District, Mandal, or Booth.");
+      setFormError(isAdmin ? "Your account has no area assigned — contact your Super Admin." : "Select at least one District, Mandal, or Booth.");
       return;
     }
 
@@ -95,6 +113,7 @@ export default function CreateTaskPage() {
         priority,
         campaignId: campaignId || undefined,
         regionIds,
+        cadreIds,
         attachmentUrls,
       },
       {
@@ -153,38 +172,70 @@ export default function CreateTaskPage() {
               <Input id="name" required value={name} onChange={(e) => setName(e.target.value)} />
             </div>
 
-            <div className="grid grid-cols-1 gap-4 sm:grid-cols-3">
-              <div>
-                <Label>Select District(s)</Label>
-                <RegionMultiSelect type="DISTRICT" selected={districtIds} onChange={handleDistrictChange} label="districts" />
+            {!isAdmin && (
+              <div className="grid grid-cols-1 gap-4 sm:grid-cols-3">
+                <div>
+                  <Label>Select District(s)</Label>
+                  <RegionMultiSelect type="DISTRICT" selected={districtIds} onChange={handleDistrictChange} label="districts" />
+                </div>
+                <div>
+                  <Label>Select Mandal(s) — optional</Label>
+                  <RegionMultiSelect
+                    type="MANDAL"
+                    selected={mandalIds}
+                    onChange={handleMandalChange}
+                    label="mandals"
+                    scopeIds={districtIds}
+                    scopeLabel="a district"
+                  />
+                </div>
+                <div>
+                  <Label>Select Village / Booth — optional</Label>
+                  <RegionMultiSelect
+                    type="BOOTH"
+                    selected={boothIds}
+                    onChange={setBoothIds}
+                    label="booths"
+                    scopeIds={mandalIds}
+                    scopeLabel="a mandal"
+                  />
+                </div>
               </div>
-              <div>
-                <Label>Select Mandal(s) — optional</Label>
-                <RegionMultiSelect
-                  type="MANDAL"
-                  selected={mandalIds}
-                  onChange={handleMandalChange}
-                  label="mandals"
-                  scopeIds={districtIds}
-                  scopeLabel="a district"
-                />
-              </div>
-              <div>
-                <Label>Select Village / Booth — optional</Label>
-                <RegionMultiSelect
-                  type="BOOTH"
-                  selected={boothIds}
-                  onChange={setBoothIds}
-                  label="booths"
-                  scopeIds={mandalIds}
-                  scopeLabel="a mandal"
-                />
-              </div>
-            </div>
+            )}
             <p className="text-xs text-slate-500">
-              This task will be sent to every active Cadre in the selected area(s) — {regionIds.length} area
-              {regionIds.length === 1 ? "" : "s"} selected so far.
+              {cadreIds.length > 0
+                ? `This task will be sent only to the ${cadreIds.length} selected Cadre${cadreIds.length === 1 ? "" : "s"}, not your full area.`
+                : isAdmin
+                  ? "This task will be sent to every active Cadre in your area."
+                  : `This task will be sent to every active Cadre in the selected area(s) — ${regionIds.length} area${regionIds.length === 1 ? "" : "s"} selected so far.`}
             </p>
+
+            {isAdmin && myCadres && myCadres.length > 0 && (
+              <div>
+                <Label>Assign to specific Cadres — optional</Label>
+                <p className="mb-1 text-xs text-slate-500">
+                  Leave unchecked to send to every active Cadre in your area. Check specific Cadres to send only to
+                  them instead.
+                </p>
+                <div className="max-h-48 space-y-1 overflow-y-auto rounded-md border border-slate-300 p-2">
+                  {myCadres.map((c) => (
+                    <label key={c.id} className="flex items-center gap-2 rounded px-1 py-1 text-sm hover:bg-slate-50">
+                      <input
+                        type="checkbox"
+                        checked={cadreIds.includes(c.id)}
+                        onChange={() => toggleCadre(c.id)}
+                        className="h-4 w-4 rounded border-slate-300"
+                      />
+                      <span className="text-slate-800">{c.name}</span>
+                      {c.region && <span className="text-xs text-slate-400">{c.region.name} ({c.region.type})</span>}
+                    </label>
+                  ))}
+                </div>
+                {cadreIds.length > 0 && (
+                  <p className="mt-1 text-xs text-slate-500">{cadreIds.length} Cadre(s) selected.</p>
+                )}
+              </div>
+            )}
 
             <div>
               <Label htmlFor="objective">Task Objective</Label>

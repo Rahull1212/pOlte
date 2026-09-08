@@ -18,6 +18,7 @@ const STATUS_OPTIONS: TaskSummaryStatus[] = [
   "OVERDUE",
   "NEEDS_ATTENTION",
   "AWAITING_ALLOCATION",
+  "CANCELLED",
 ];
 
 const statusTone: Record<TaskSummaryStatus, "slate" | "blue" | "green" | "red" | "amber"> = {
@@ -27,6 +28,7 @@ const statusTone: Record<TaskSummaryStatus, "slate" | "blue" | "green" | "red" |
   OVERDUE: "red",
   NEEDS_ATTENTION: "amber",
   AWAITING_ALLOCATION: "amber",
+  CANCELLED: "slate",
 };
 
 const statusLabel: Record<TaskSummaryStatus, string> = {
@@ -36,6 +38,7 @@ const statusLabel: Record<TaskSummaryStatus, string> = {
   OVERDUE: "Overdue",
   NEEDS_ATTENTION: "Needs Attention",
   AWAITING_ALLOCATION: "Awaiting Allocation",
+  CANCELLED: "Everyone Removed",
 };
 
 const priorityTone: Record<TaskPriority, "slate" | "blue" | "amber" | "red"> = {
@@ -74,9 +77,14 @@ export default function TasksPage() {
     <AppShell>
       <div className="mb-6 flex items-center justify-between">
         <h1 className="text-lg font-semibold text-slate-900">Tasks</h1>
-        <Link href="/tasks/new">
-          <Button>+ Create Task</Button>
-        </Link>
+        <div className="flex gap-2">
+          <Link href="/tasks/analytics">
+            <Button variant="secondary">📊 Communication & AI Insights</Button>
+          </Link>
+          <Link href="/tasks/new">
+            <Button>+ Create Task</Button>
+          </Link>
+        </div>
       </div>
 
       {user?.role === "ADMIN" && pendingAllocation && pendingAllocation.length > 0 && (

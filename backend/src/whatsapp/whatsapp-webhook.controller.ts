@@ -2,7 +2,8 @@ import { Body, Controller, Get, HttpCode, Logger, Post, Query, Res } from "@nest
 import type { Response } from "express";
 import { Public } from "../common/decorators/public.decorator";
 import { WhatsAppConversationService } from "./whatsapp-conversation.service";
-import { extractMessages, WhatsAppWebhookBody } from "./whatsapp-payload.types";
+import { extractMessages, extractStatuses, WhatsAppWebhookBody } from "./whatsapp-payload.types";
+import { TasksService } from "../tasks/tasks.service";
 
 /**
  * Receives inbound WhatsApp traffic from Meta. Both routes must be public —
@@ -15,7 +16,10 @@ import { extractMessages, WhatsAppWebhookBody } from "./whatsapp-payload.types";
 export class WhatsAppWebhookController {
   private readonly logger = new Logger(WhatsAppWebhookController.name);
 
-  constructor(private readonly conversationService: WhatsAppConversationService) {}
+  constructor(
+    private readonly conversationService: WhatsAppConversationService,
+    private readonly tasksService: TasksService,
+  ) {}
 
   @Public()
   @Get("webhook")
@@ -45,6 +49,19 @@ export class WhatsAppWebhookController {
         this.logger.error(`Failed to process WhatsApp message: ${(err as Error).message}`);
       }
     }
+
+    // Delivery/read/failed receipts for messages *this app* sent — powers
+    // the Task Communication dashboard's Delivered/Read KPIs for real,
+    // rather than leaving them permanently at zero.
+    const statuses = extractStatuses(body);
+    for (const status of statuses) {
+      try {
+        await this.tasksService.handleWhatsappStatusUpdate(status.id, status.status, status.timestamp);
+      } catch (err) {
+        this.logger.error(`Failed to process WhatsApp status update: ${(err as Error).message}`);
+      }
+    }
+
     return { received: true };
   }
 }

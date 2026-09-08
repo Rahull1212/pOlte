@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { Suspense, useState } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 import { AppShell } from "@/components/app-shell";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -16,7 +16,18 @@ import { GrievanceStatus } from "@/lib/shared-types";
 const statusTone = { OPEN: "amber", IN_PROGRESS: "blue", RESOLVED: "green", REJECTED: "red" } as const;
 const STATUS_OPTIONS: GrievanceStatus[] = ["OPEN", "IN_PROGRESS", "RESOLVED", "REJECTED"];
 
+// useSearchParams() opts a page out of static generation unless it's inside
+// a Suspense boundary — `next build` fails without this wrapper (dev mode
+// doesn't enforce it, which is why this only ever showed up in a real build).
 export default function GrievancesPage() {
+  return (
+    <Suspense fallback={null}>
+      <GrievancesPageContent />
+    </Suspense>
+  );
+}
+
+function GrievancesPageContent() {
   const { data: user } = useCurrentUser();
   const router = useRouter();
   const searchParams = useSearchParams();

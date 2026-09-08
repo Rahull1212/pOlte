@@ -36,6 +36,9 @@ export type TaskPriority = (typeof TaskPriority)[number];
 export const TaskAcknowledgment = ["AWAITING", "ACCEPTED", "DECLINED"] as const;
 export type TaskAcknowledgment = (typeof TaskAcknowledgment)[number];
 
+export const WhatsappDeliveryStatus = ["PENDING", "SENT", "FAILED"] as const;
+export type WhatsappDeliveryStatus = (typeof WhatsappDeliveryStatus)[number];
+
 export const ExpenseType = [
   "POSTER_PRINTING",
   "FOOD",
@@ -130,7 +133,11 @@ export const createUserSchema = z.object({
   name: z.string().min(2).max(100),
   phone: z.string().min(10).max(15),
   email: z.string().email().optional(),
-  password: z.string().min(6),
+  // Optional — required for an Admin (who logs into the web portal), but a
+  // Cadre works entirely from WhatsApp and never types a password anywhere,
+  // so UsersService.create() generates one server-side for a Cadre rather
+  // than making an Admin invent/communicate one nobody will ever use.
+  password: z.string().min(6).optional(),
   role: z.enum(Role),
   regionId: z.string().min(1),
   parentUserId: z.string().optional(),
@@ -246,6 +253,12 @@ export const createTaskBatchSchema = z.object({
   priority: z.enum(TaskPriority).default("MEDIUM"),
   campaignId: z.string().optional(),
   regionIds: z.array(z.string().min(1)).min(1, "Select at least one area"),
+  // When an Admin creates a task and hand-picks specific Cadres, this
+  // narrows delivery to exactly those Cadres instead of broadcasting to
+  // every active Cadre in the selected area(s). Left empty (the default,
+  // and always for a Super Admin's routed batch), the area broadcast
+  // behavior is unchanged.
+  cadreIds: z.array(z.string().min(1)).default([]),
   attachmentUrls: z.array(z.string().url()).default([]),
 });
 export type CreateTaskBatchDto = z.infer<typeof createTaskBatchSchema>;
@@ -256,11 +269,37 @@ export const acknowledgeTaskSchema = z.object({
 export type AcknowledgeTaskDto = z.infer<typeof acknowledgeTaskSchema>;
 
 // An Admin allocating a Super-Admin-routed batch to their own Cadres — see
-// TasksService.allocateToCadres.
-export const allocateTaskSchema = z.object({
-  regionIds: z.array(z.string().min(1)).min(1, "Select at least one area"),
-});
+// TasksService.allocateToCadres. Either regionIds (broadcast to every active
+// Cadre in those area(s)) or cadreIds (specific hand-picked Cadres) or both.
+export const allocateTaskSchema = z
+  .object({
+    regionIds: z.array(z.string().min(1)).default([]),
+    cadreIds: z.array(z.string().min(1)).default([]),
+  })
+  .refine((d) => d.regionIds.length > 0 || d.cadreIds.length > 0, {
+    message: "Select at least one area or Cadre",
+  });
 export type AllocateTaskDto = z.infer<typeof allocateTaskSchema>;
+
+// Shared by both Ask AI surfaces: the per-task dashboard (filters unused)
+// and the global Communication & AI Insights dashboard (filters optional —
+// whatever the Admin currently has the dashboard filtered to).
+export const taskAnalyticsFiltersSchema = z.object({
+  dateFrom: z.string().optional(),
+  dateTo: z.string().optional(),
+  districtId: z.string().optional(),
+  mandalId: z.string().optional(),
+  status: z.string().optional(),
+  priority: z.string().optional(),
+  taskType: z.enum(["BULK", "INDIVIDUAL"]).optional(),
+});
+export type TaskAnalyticsFiltersDto = z.infer<typeof taskAnalyticsFiltersSchema>;
+
+export const askTaskAiSchema = z.object({
+  question: z.string().min(3).max(500),
+  filters: taskAnalyticsFiltersSchema.optional(),
+});
+export type AskTaskAiDto = z.infer<typeof askTaskAiSchema>;
 
 export const progressUpdateSchema = z.object({
   completedForms: z.number().int().nonnegative().optional(),

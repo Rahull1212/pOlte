@@ -1,12 +1,23 @@
 "use client";
 
+import { useState } from "react";
 import Link from "next/link";
 import { useParams } from "next/navigation";
 import { AppShell } from "@/components/app-shell";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
-import { useTaskDetail, TaskSummaryStatus } from "@/hooks/use-tasks";
+import { ConfirmDialog } from "@/components/ui/confirm-dialog";
+import { useTaskDetail, useRemoveTaskAssignee, TaskSummaryStatus, TaskDetail } from "@/hooks/use-tasks";
+import { useCurrentUser } from "@/hooks/use-auth";
+
+const whatsappStatusTone: Record<TaskDetail["assignedMembers"][number]["whatsappStatus"], "slate" | "blue" | "green" | "red" | "amber"> = {
+  PENDING: "slate",
+  SENT: "blue",
+  DELIVERED: "amber",
+  READ: "green",
+  FAILED: "red",
+};
 
 const statusTone: Record<TaskSummaryStatus, "slate" | "blue" | "green" | "red" | "amber"> = {
   PENDING: "slate",
@@ -15,6 +26,7 @@ const statusTone: Record<TaskSummaryStatus, "slate" | "blue" | "green" | "red" |
   OVERDUE: "red",
   NEEDS_ATTENTION: "amber",
   AWAITING_ALLOCATION: "amber",
+  CANCELLED: "slate",
 };
 
 const statusLabel: Record<TaskSummaryStatus, string> = {
@@ -24,6 +36,7 @@ const statusLabel: Record<TaskSummaryStatus, string> = {
   OVERDUE: "Overdue",
   NEEDS_ATTENTION: "Needs Attention",
   AWAITING_ALLOCATION: "Awaiting Allocation",
+  CANCELLED: "Everyone Removed",
 };
 
 function Field({ label, value }: { label: string; value: React.ReactNode }) {
@@ -39,6 +52,10 @@ export default function TaskDetailPage() {
   const params = useParams<{ id: string }>();
   const id = params.id;
   const { data: task, isLoading } = useTaskDetail(id);
+  const { data: currentUser } = useCurrentUser();
+  const removeAssignee = useRemoveTaskAssignee();
+  const [removeTarget, setRemoveTarget] = useState<{ taskId: string; name: string } | null>(null);
+  const canRemove = currentUser?.role === "SUPER_ADMIN" || currentUser?.role === "ADMIN";
 
   if (isLoading) {
     return (
@@ -69,15 +86,16 @@ export default function TaskDetailPage() {
             <Badge tone="slate">{task.priority}</Badge>
           </div>
         </div>
-        {task.awaitingAllocation ? (
-          <Link href={`/tasks/${id}/allocate`}>
-            <Button>Allocate to Cadres</Button>
-          </Link>
-        ) : (
+        <div className="flex shrink-0 gap-2">
           <Link href={`/tasks/${id}/dashboard`}>
-            <Button>View Task Dashboard</Button>
+            <Button variant="secondary">📊 View Dashboard</Button>
           </Link>
-        )}
+          {task.awaitingAllocation && (
+            <Link href={`/tasks/${id}/allocate`}>
+              <Button>Allocate to Cadres</Button>
+            </Link>
+          )}
+        </div>
       </div>
 
       {task.awaitingAllocation && (
@@ -117,23 +135,52 @@ export default function TaskDetailPage() {
               <CardTitle>Assigned Members ({task.assignedMembers.length})</CardTitle>
             </CardHeader>
             <CardContent className="p-0">
+              {removeAssignee.isError && (
+                <p className="px-5 pt-3 text-xs text-red-600">{(removeAssignee.error as Error).message}</p>
+              )}
               <table className="w-full text-sm">
                 <thead className="border-b border-slate-100 text-left text-xs uppercase text-slate-500">
                   <tr>
                     <th className="px-5 py-2">Name</th>
                     <th className="px-5 py-2">Area</th>
+                    <th className="px-5 py-2">WhatsApp</th>
+                    {canRemove && <th className="px-5 py-2 text-right">Actions</th>}
                   </tr>
                 </thead>
                 <tbody>
-                  {task.assignedMembers.map((m) => (
-                    <tr key={m.id} className="border-b border-slate-50">
-                      <td className="px-5 py-2 text-slate-800">{m.name}</td>
-                      <td className="px-5 py-2 text-slate-600">{m.area}</td>
-                    </tr>
-                  ))}
+                  {task.assignedMembers.map((m) => {
+                    const removed = m.status === "CANCELLED";
+                    return (
+                      <tr key={m.id} className={`border-b border-slate-50 ${removed ? "opacity-60" : ""}`}>
+                        <td className="px-5 py-2 text-slate-800">{m.name}</td>
+                        <td className="px-5 py-2 text-slate-600">{m.area}</td>
+                        <td className="px-5 py-2">
+                          <Badge tone={whatsappStatusTone[m.whatsappStatus]}>{m.whatsappStatus}</Badge>
+                          {m.fyxoTemplateName && (
+                            <span className="ml-2 text-xs text-slate-400">via "{m.fyxoTemplateName}"</span>
+                          )}
+                        </td>
+                        {canRemove && (
+                          <td className="px-5 py-2 text-right">
+                            {removed ? (
+                              <span className="text-xs text-slate-400">Removed</span>
+                            ) : (
+                              <Button
+                                variant="ghost"
+                                className="text-red-600 hover:bg-red-50"
+                                onClick={() => setRemoveTarget({ taskId: m.taskId, name: m.name })}
+                              >
+                                Remove
+                              </Button>
+                            )}
+                          </td>
+                        )}
+                      </tr>
+                    );
+                  })}
                   {task.assignedMembers.length === 0 && (
                     <tr>
-                      <td colSpan={2} className="px-5 py-6 text-center text-slate-400">
+                      <td colSpan={canRemove ? 4 : 3} className="px-5 py-6 text-center text-slate-400">
                         No members assigned.
                       </td>
                     </tr>
@@ -185,6 +232,23 @@ export default function TaskDetailPage() {
           </Card>
         </div>
       </div>
+
+      {removeTarget && (
+        <ConfirmDialog
+          title={`Remove ${removeTarget.name} from this task?`}
+          message="They'll stop being counted as assigned to this task, and won't be sent further WhatsApp updates about it. Their existing progress, WhatsApp delivery, and response history for it is kept, not deleted."
+          confirmLabel={removeAssignee.isPending ? "Removing…" : "Remove"}
+          destructive
+          isPending={removeAssignee.isPending}
+          onConfirm={() =>
+            removeAssignee.mutate(removeTarget.taskId, {
+              onSuccess: () => setRemoveTarget(null),
+              onError: () => setRemoveTarget(null),
+            })
+          }
+          onCancel={() => setRemoveTarget(null)}
+        />
+      )}
     </AppShell>
   );
 }

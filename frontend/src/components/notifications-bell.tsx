@@ -1,8 +1,28 @@
 "use client";
 
 import { useState, useRef, useEffect } from "react";
+import { useRouter } from "next/navigation";
 import { BellIcon } from "./icons";
-import { useNotifications, useMarkNotificationRead } from "@/hooks/use-notifications";
+import { useNotifications, useMarkNotificationRead, AppNotification } from "@/hooks/use-notifications";
+
+// Where each relatedEntityType's own detail page lives. Task/Event/Campaign
+// detail routes accept the id directly; Grievance and ExpenseRequest have
+// no per-record detail page yet, so those just land you on the list.
+function resolveNotificationLink(n: AppNotification): string | null {
+  if (!n.relatedEntityId) return null;
+  switch (n.relatedEntityType) {
+    case "Task":
+      return `/tasks/${n.relatedEntityId}`;
+    case "Event":
+      return `/events/${n.relatedEntityId}`;
+    case "Campaign":
+      return `/campaigns/${n.relatedEntityId}`;
+    case "Grievance":
+      return "/grievances";
+    default:
+      return null;
+  }
+}
 
 function timeAgo(iso: string) {
   const seconds = Math.floor((Date.now() - new Date(iso).getTime()) / 1000);
@@ -17,9 +37,19 @@ function timeAgo(iso: string) {
 export function NotificationsBell() {
   const [open, setOpen] = useState(false);
   const ref = useRef<HTMLDivElement>(null);
+  const router = useRouter();
   const { data: notifications } = useNotifications();
   const markRead = useMarkNotificationRead();
   const unreadCount = notifications?.filter((n) => !n.isRead).length ?? 0;
+
+  const onNotificationClick = (n: AppNotification) => {
+    if (!n.isRead) markRead.mutate(n.id);
+    const link = resolveNotificationLink(n);
+    if (link) {
+      setOpen(false);
+      router.push(link);
+    }
+  };
 
   useEffect(() => {
     const onClickOutside = (e: MouseEvent) => {
@@ -56,7 +86,7 @@ export function NotificationsBell() {
             {notifications?.map((n) => (
               <button
                 key={n.id}
-                onClick={() => !n.isRead && markRead.mutate(n.id)}
+                onClick={() => onNotificationClick(n)}
                 className={`block w-full border-b border-slate-50 px-4 py-3 text-left text-sm hover:bg-slate-50 ${
                   n.isRead ? "opacity-60" : ""
                 }`}

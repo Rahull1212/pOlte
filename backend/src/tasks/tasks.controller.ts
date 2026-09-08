@@ -2,6 +2,7 @@ import {
   BadRequestException,
   Body,
   Controller,
+  Delete,
   Get,
   Param,
   Patch,
@@ -20,6 +21,8 @@ import {
   AcknowledgeTaskDto,
   allocateTaskSchema,
   AllocateTaskDto,
+  askTaskAiSchema,
+  AskTaskAiDto,
   createTaskBatchSchema,
   CreateTaskBatchDto,
   createTaskSchema,
@@ -145,6 +148,16 @@ export class TasksController {
     return this.tasksService.getSavedInsights(id);
   }
 
+  @Post(":id/ask")
+  @Roles("SUPER_ADMIN", "ADMIN")
+  askAboutTask(
+    @Param("id") id: string,
+    @Body(new ZodValidationPipe(askTaskAiSchema)) dto: AskTaskAiDto,
+    @CurrentUser() user: AuthenticatedUser,
+  ) {
+    return this.tasksService.askAboutTask(id, dto.question, user);
+  }
+
   @Post(":id/allocate")
   @Roles("ADMIN")
   allocateToCadres(
@@ -152,7 +165,24 @@ export class TasksController {
     @Body(new ZodValidationPipe(allocateTaskSchema)) dto: AllocateTaskDto,
     @CurrentUser() user: AuthenticatedUser,
   ) {
-    return this.tasksService.allocateToCadres(id, dto.regionIds, user);
+    return this.tasksService.allocateToCadres(id, dto, user);
+  }
+
+  // "id" here is a single Cadre's own Task row (one per allocation), not a
+  // batch id — retrying is a per-Cadre delivery concern.
+  @Post(":id/retry-whatsapp")
+  @Roles("SUPER_ADMIN", "ADMIN")
+  retryWhatsapp(@Param("id") id: string, @CurrentUser() user: AuthenticatedUser) {
+    return this.tasksService.retryWhatsapp(id, user);
+  }
+
+  // Same per-Cadre "id is one Task row" convention as retry-whatsapp above —
+  // removes that one Cadre from the task without touching anyone else on it
+  // or deleting the row (see TasksService.removeAssignee).
+  @Delete(":id/assignee")
+  @Roles("SUPER_ADMIN", "ADMIN")
+  removeAssignee(@Param("id") id: string, @CurrentUser() user: AuthenticatedUser) {
+    return this.tasksService.removeAssignee(id, user);
   }
 
   @Patch(":id")

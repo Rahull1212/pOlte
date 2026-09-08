@@ -125,3 +125,11 @@ export function ChatBubbleIcon(props: SVGProps<SVGSVGElement>) {
     </svg>
   );
 }
+
+export function PlugIcon(props: SVGProps<SVGSVGElement>) {
+  return (
+    <svg {...base(props)}>
+      <path strokeLinecap="round" strokeLinejoin="round" d="M13.5 21v-4.5m0 0a3 3 0 003-3v-1.5H7.5V13.5a3 3 0 003 3zm0 0V21M9 6V3m6 3V3M6 10.5h12" />
+    </svg>
+  );
+}

@@ -5,7 +5,11 @@ import { join } from "node:path";
 import { AppModule } from "./app.module";
 
 async function bootstrap() {
-  const app = await NestFactory.create<NestExpressApplication>(AppModule, { cors: false });
+  // rawBody: true keeps the parsed JSON body AND exposes the raw request
+  // buffer (req.rawBody) alongside it — needed by FyxoAgentWebhookController
+  // to verify Fyxo's HMAC-SHA256 signature over the exact bytes Fyxo signed,
+  // without having to bypass JSON parsing for every other route.
+  const app = await NestFactory.create<NestExpressApplication>(AppModule, { cors: false, rawBody: true });
 
   app.enableCors({
     origin: process.env.CORS_ORIGIN ?? "http://localhost:3000",

@@ -380,40 +380,41 @@ export class BulkMessagingService {
   }
 
   /**
-   * Applies a delivery-status update from Fyxo Connect's webhook. The exact
-   * payload shape is a best-effort guess (see FyxoWebhookController) until
-   * Fyxo Connect's real webhook contract is confirmed — this tolerantly
-   * accepts a few likely status-string spellings and no-ops (logs, doesn't
-   * throw) on anything it can't correlate to a known providerMessageId, so
-   * a shape mismatch never turns into a 500 back to Fyxo Connect.
+   * Applies a delivery-status update from Fyxo Connect's webhook. Event
+   * names are the confirmed ones from API.md §10 (message.sent/delivered/
+   * read/failed, contact.opted_out) — matched case-insensitively with a
+   * couple of bare-word fallbacks in case a status string ever arrives
+   * instead of a full event name. No-ops (logs, doesn't throw) on anything
+   * unrecognized or uncorrelated, so a shape surprise never turns into a
+   * 500 back to Fyxo Connect.
    */
-  async handleStatusWebhook(providerMessageId: string, statusRaw: string, timestamp?: string): Promise<boolean> {
+  async handleStatusWebhook(providerMessageId: string, eventRaw: string, timestamp?: string): Promise<boolean> {
     const recipient = await this.prisma.bulkRecipient.findFirst({ where: { providerMessageId } });
     if (!recipient) {
       this.logger.warn(`Fyxo Connect webhook: no recipient found for providerMessageId=${providerMessageId}`);
       return false;
     }
 
-    const status = statusRaw.toUpperCase().replace(/[\s-]/g, "_");
+    const event = eventRaw.toLowerCase().trim();
     const at = timestamp ? new Date(timestamp) : new Date();
     const data: Record<string, unknown> = {};
 
-    if (status === "DELIVERED") {
+    if (event === "message.delivered" || event === "delivered") {
       data.status = "DELIVERED";
       data.deliveredAt = at;
-    } else if (status === "READ" || status === "SEEN") {
+    } else if (event === "message.read" || event === "read" || event === "seen") {
       data.status = "READ";
       data.readAt = at;
-    } else if (status === "FAILED" || status === "ERROR" || status === "UNDELIVERED") {
+    } else if (event === "message.failed" || event === "failed" || event === "error" || event === "undelivered") {
       data.status = "FAILED";
       data.failedReason = "Reported failed by Fyxo Connect";
-    } else if (status === "OPTED_OUT" || status === "OPT_OUT" || status === "BLOCKED") {
+    } else if (event === "contact.opted_out" || event === "opted_out" || event === "opt_out" || event === "blocked") {
       data.status = "OPTED_OUT";
-    } else if (status === "SENT" || status === "ACCEPTED" || status === "QUEUED") {
+    } else if (event === "message.sent" || event === "sent" || event === "accepted" || event === "queued") {
       data.status = "SENT";
-      data.sentAt = data.sentAt ?? at;
+      data.sentAt = at;
     } else {
-      this.logger.warn(`Fyxo Connect webhook: unrecognized status "${statusRaw}" for providerMessageId=${providerMessageId}`);
+      this.logger.warn(`Fyxo Connect webhook: unrecognized event "${eventRaw}" for providerMessageId=${providerMessageId}`);
       return false;
     }
 

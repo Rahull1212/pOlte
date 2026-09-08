@@ -45,7 +45,7 @@ export class UsersController {
 
   @Delete(":id")
   @Roles("SUPER_ADMIN", "ADMIN")
-  deactivate(@Param("id") id: string, @CurrentUser() user: AuthenticatedUser) {
-    return this.usersService.deactivate(id, user);
+  remove(@Param("id") id: string, @CurrentUser() user: AuthenticatedUser) {
+    return this.usersService.remove(id, user);
   }
 }
