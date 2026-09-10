@@ -64,6 +64,12 @@ enum TaskAcknowledgment {
   DECLINED
 }
 
+enum TaskCompletionConfirmation {
+  AWAITING
+  YES
+  NO
+}
+
 enum ExpenseType {
   POSTER_PRINTING
   FOOD
@@ -101,6 +107,7 @@ enum NotificationType {
   TASK_DECLINED
   TASK_PENDING_ALLOCATION
   TASK_ALLOCATED
+  POLL_PENDING_ALLOCATION
 }
 
 enum AIInsightType {
@@ -151,6 +158,23 @@ model User {
   isActive       Boolean  @default(true)
   createdAt      DateTime @default(now())
 
+  // The approved WhatsApp template this user's OWN tasks go out with,
+  // assigned by a Super Admin (see MessageTemplatesService). One template per
+  // person, but the SAME template may be shared by any number of them —
+  // a campaign typically has far more Admins than approved templates, so
+  // requiring one each would leave most Admins unable to have one at all.
+  // Null is the norm rather than an error: TasksService falls back to the
+  // default "polios" template.
+  //
+  // PoliOS can't create or approve these — the name must already exist and
+  // be approved in Fyxo/Meta. Body is recorded only so the Google Sheet log
+  // and the UI can show what the Cadre actually reads; it is never sent.
+  // Every template here must take ONE variable, {{1}} = the Cadre's name;
+  // the assign screen warns when a synced template says otherwise.
+  fyxoTemplateName     String?
+  fyxoTemplateLanguage String?
+  fyxoTemplateBody     String?
+
   createdCampaigns    Campaign[]         @relation("CampaignCreator")
   allocationsGiven    TargetAllocation[] @relation("AllocationAssignedBy")
   allocationsOwned    TargetAllocation[] @relation("AllocationOwner")
@@ -172,6 +196,11 @@ model User {
   otpCodes            OtpCode[]
   bulkCampaignsCreated BulkMessageCampaign[]
   fieldReports        FieldReport[]      @relation("FieldReportCadre")
+  pollsCreated        Poll[]             @relation("PollCreator")
+  pollResponses       PollRecipient[]    @relation("PollRecipientCadre")
+  sheetConnections    SheetConnection[]  @relation("SheetConnectedBy")
+  googleCredentials   GoogleServiceAccount[] @relation("GoogleCredentialUploadedBy")
+  googleOAuth         GoogleOAuthConnection[] @relation("GoogleOAuthConnectedBy")
 }
 
 // Verification codes for self-service flows that need proof the caller
@@ -393,6 +422,19 @@ model Task {
   // any later re-submission, so "average completion time" reflects the
   // actual first completion rather than a resubmit timestamp.
   completedAt       DateTime?
+  // "Have you completed your task?" Yes/No check-in — distinct from
+  // `acknowledgment` above (that's "will you take this on"; this is "did
+  // you finish it"). Only set once an Admin actually sends the check-in
+  // (see TasksService.sendCompletionCheck) — most tasks are never asked, so
+  // completionConfirmation being null means "never asked", not "asked but
+  // no reply yet" (that's AWAITING). Its own message id, separate from
+  // fyxoMessageId above, since a Task can have two different outbound Fyxo
+  // sends (the original assignment, and later this check-in) needing to
+  // correlate independently against their own delivery-status webhooks.
+  completionCheckSentAt        DateTime?
+  completionCheckFyxoMessageId String?
+  completionConfirmation       TaskCompletionConfirmation?
+  completionConfirmedAt        DateTime?
   createdAt         DateTime               @default(now())
 
   attachments  TaskAttachment[]
@@ -411,6 +453,65 @@ model TaskAttachment {
   url       String
   fileType  String
   createdAt DateTime @default(now())
+}
+
+// ============================================================
+// POLLS
+// ============================================================
+// Same two-step "create the record, then allocate/send it" shape as
+// TaskBatch/Task (see PollsService) — created with awaitingAllocation:
+// true and zero recipients, sent only once explicitly allocated to
+// Cadres. Delivered via a generic Fyxo template with fixed Quick Reply
+// buttons (Meta template buttons can't carry per-poll dynamic text) — the
+// question and option *labels* go in the message body as variables, and
+// the buttons are just generic slots ("Option A/B/C") whose tap gets
+// mapped back to this poll's real options by position. See
+// FYXO_TEMPLATES.POLL and PollsService.allocate.
+model Poll {
+  id                 String    @id @default(cuid())
+  question           String
+  // 2-3 entries — capped by how many Quick Reply buttons a WhatsApp
+  // template can carry (see the module comment above).
+  options            String[]
+  targetRegionIds    String[]
+  deadline           DateTime?
+  createdById        String
+  createdBy          User      @relation("PollCreator", fields: [createdById], references: [id])
+  createdAt          DateTime  @default(now())
+  awaitingAllocation Boolean   @default(true)
+
+  recipients PollRecipient[]
+}
+
+enum PollRecipientStatus {
+  PENDING
+  SENT
+  FAILED
+  ANSWERED
+}
+
+// One row per Cadre a Poll was sent to — mirrors Task's one-row-per-Cadre
+// shape. cadreId is optional so a response's vote survives that Cadre's
+// account being deleted later (see UsersService.remove) without
+// misattributing it to whoever did the deleting.
+model PollRecipient {
+  id             String              @id @default(cuid())
+  pollId         String
+  poll           Poll                @relation(fields: [pollId], references: [id])
+  cadreId        String?
+  cadre          User?               @relation("PollRecipientCadre", fields: [cadreId], references: [id])
+  status         PollRecipientStatus @default(PENDING)
+  fyxoMessageId  String?
+  sentAt         DateTime?
+  // Index into the Poll's options array — recorded once the webhook-driven
+  // button-tap correlation is confirmed and wired (not yet — see
+  // PollsService's doc comment).
+  selectedOption Int?
+  answeredAt     DateTime?
+  createdAt      DateTime            @default(now())
+
+  @@index([pollId])
+  @@index([fyxoMessageId])
 }
 
 model ProgressUpdate {
@@ -793,4 +894,120 @@ model AgentActivityLog {
 
   @@index([correlationId])
   @@index([cadreId, createdAt])
+}
+
+// Approved WhatsApp templates pulled from the provider by the Sync button,
+// so a Super Admin picks an Admin's template from a list instead of typing a
+// name that only fails later at send time. A cache of someone else's data:
+// wiped and rewritten on each sync, never edited here.
+//
+// `name` is the primary key because that is what identifies a template to
+// both Meta and Fyxo — there is no separate id in a send request.
+model AvailableTemplate {
+  name      String   @id
+  language  String
+  body      String?
+  // As reported by the provider (APPROVED / PENDING / REJECTED). Only
+  // APPROVED templates can actually be sent, so the UI dims the others
+  // rather than hiding them — a Super Admin needs to see that the template
+  // they're waiting on exists but isn't usable yet.
+  status    String?
+  // How many {{n}} placeholders the body takes. PoliOS fills exactly one
+  // (the Cadre's name), so anything else is flagged in the UI as unusable
+  // rather than discovered when a send fails.
+  variables Int?
+  // The template's fixed quick-reply button labels ("Task Details"), which
+  // Meta bakes in at approval time. Shown so a Super Admin can tell two
+  // similar templates apart by what the Cadre actually taps.
+  buttons   String[]
+  category  String?
+  // Which provider it came from, shown so a stale cache is explicable.
+  source    String
+  syncedAt  DateTime @default(now())
+}
+
+// The Google service-account credential that does the actual writing,
+// uploaded by a Super Admin in the app (Google Sheet -> Google access) so
+// connecting a sheet needs no .env editing or redeploy. Falls back to
+// GOOGLE_SHEETS_CLIENT_EMAIL/_PRIVATE_KEY when absent, so an existing
+// env-configured deploy keeps working untouched.
+//
+// Singleton, same fixed-id pattern as SheetConnection below.
+//
+// privateKey is stored ENCRYPTED (AES-256-GCM, key derived from
+// JWT_ACCESS_SECRET) — it grants write access to the user's Google Sheets,
+// so a leaked database dump must not hand it over in the clear. See
+// encryptSecret/decryptSecret in google-sheets.service.ts.
+model GoogleServiceAccount {
+  id            String   @id
+  clientEmail   String
+  privateKey    String
+  projectId     String?
+  uploadedById  String?
+  uploadedBy    User?    @relation("GoogleCredentialUploadedBy", fields: [uploadedById], references: [id])
+  uploadedAt    DateTime @default(now())
+}
+
+// The Super Admin's own Google account, connected with one click ("Connect
+// Google Sheets" -> Google's sign-in -> pick a sheet). This is the primary
+// path; GoogleServiceAccount above stays as a fallback for deploys that
+// prefer a robot account and don't want an OAuth app at all.
+//
+// Singleton, same fixed-id pattern as the rest of this file. Holds two
+// different things that are only stored together because both are one-per-
+// install and both are secret:
+//   - clientId/clientSecret: the OAuth *application* identity, registered
+//     once in Google Cloud. Falls back to GOOGLE_OAUTH_CLIENT_ID/_SECRET.
+//   - refreshToken/accountEmail: the *user* who signed in. Set by the OAuth
+//     callback, cleared on disconnect.
+// Both secrets are encrypted at rest (see encryptSecret in
+// google-sheets.service.ts) — a refresh token is a standing key to that
+// person's Google Drive.
+model GoogleOAuthConnection {
+  id            String    @id
+  clientId      String?
+  clientSecret  String?
+  refreshToken  String?
+  accountEmail  String?
+  connectedById String?
+  connectedBy   User?     @relation("GoogleOAuthConnectedBy", fields: [connectedById], references: [id])
+  connectedAt   DateTime?
+}
+
+// The Google Sheet that every outbound task WhatsApp message is logged to,
+// connected by a Super Admin from the app itself (Google Sheet page ->
+// "Connect Sheet") rather than configured in .env — the *which sheet*
+// decision belongs to whoever runs the campaign, not to a deploy. The
+// service-account credential that does the writing is still deploy-level
+// (GOOGLE_SHEETS_CLIENT_EMAIL/_PRIVATE_KEY), since it's one credential for
+// the whole app and handing it to an end user would be a secret leak.
+//
+// Singleton by design: exactly one sheet is live at a time, so every row
+// uses the fixed id below and connecting again overwrites it (upsert) — no
+// "which of these five connections is active?" ambiguity. A model rather
+// than a key/value settings table because these fields are queried and
+// displayed as a unit, and a real schema catches a typo'd key at compile
+// time instead of returning undefined at runtime.
+model SheetConnection {
+  // Fixed literal — see SHEET_CONNECTION_ID in google-sheets.service.ts.
+  id               String    @id
+  spreadsheetId    String
+  spreadsheetUrl   String
+  // Resolved from Google at connect time (not typed by the user), so the UI
+  // can show the sheet's real name as proof the right one is connected.
+  spreadsheetTitle String
+  tabName          String
+  // Nullable so deleting the Super Admin who connected it leaves the
+  // connection working (ON DELETE SET NULL) instead of blocking the delete
+  // or silently misattributing it — same call as AuditLog.userId.
+  connectedById    String?
+  connectedBy      User?     @relation("SheetConnectedBy", fields: [connectedById], references: [id])
+  connectedAt      DateTime  @default(now())
+  // Health of the live sync, surfaced on the settings page. Written only
+  // when the state actually changes (first success after an error, or a new
+  // error) — never once per appended row, which would put 200 writes and a
+  // row lock on this single row during one big allocation.
+  lastAppendAt     DateTime?
+  lastError        String?
+  lastErrorAt      DateTime?
 }

@@ -16,7 +16,9 @@ import {
   GrievanceIcon,
   ChartIcon,
   ChatBubbleIcon,
+  PollIcon,
   PlugIcon,
+  SheetIcon,
   SearchIcon,
   ChevronDownIcon,
   LogoutIcon,
@@ -67,6 +69,9 @@ export function AppShell({ children, fullBleed = false }: AppShellProps) {
       ? [{ href: "/tasks", label: "Tasks", icon: ChartIcon }]
       : []),
     ...(user?.role === "SUPER_ADMIN" || user?.role === "ADMIN"
+      ? [{ href: "/polls", label: "Polls", icon: PollIcon }]
+      : []),
+    ...(user?.role === "SUPER_ADMIN" || user?.role === "ADMIN"
       ? [{ href: "/users", label: user.role === "SUPER_ADMIN" ? "Admins" : "Cadres", icon: UsersIcon }]
       : []),
     ...(user?.role === "SUPER_ADMIN" || user?.role === "ADMIN"
@@ -77,6 +82,15 @@ export function AppShell({ children, fullBleed = false }: AppShellProps) {
       : []),
     ...(user?.role === "SUPER_ADMIN" || user?.role === "ADMIN"
       ? [{ href: "/fyxo-connect", label: "Fyxo Connect", icon: PlugIcon }]
+      : []),
+    // Super Admin only: which template each Admin owns, and which sheet the
+    // whole campaign's message log goes to, are app-wide settings — not
+    // something each Admin repoints for themselves.
+    ...(user?.role === "SUPER_ADMIN"
+      ? [
+          { href: "/message-templates", label: "WhatsApp Templates", icon: ChatBubbleIcon },
+          { href: "/google-sheet", label: "Google Sheet", icon: SheetIcon },
+        ]
       : []),
   ];
 

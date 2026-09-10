@@ -126,6 +126,31 @@ export function ChatBubbleIcon(props: SVGProps<SVGSVGElement>) {
   );
 }
 
+export function PollIcon(props: SVGProps<SVGSVGElement>) {
+  return (
+    <svg {...base(props)}>
+      <path
+        strokeLinecap="round"
+        strokeLinejoin="round"
+        d="M9 4.5h10.5M9 9h10.5M9 13.5h6M3.75 4.5l1 1 2-2M3.75 9l1 1 2-2M3.75 13.5l1 1 2-2M3.75 18h6"
+      />
+    </svg>
+  );
+}
+
+// A grid/table outline — the task-message log sheet.
+export function SheetIcon(props: SVGProps<SVGSVGElement>) {
+  return (
+    <svg {...base(props)}>
+      <path
+        strokeLinecap="round"
+        strokeLinejoin="round"
+        d="M3.75 6.75A1.5 1.5 0 015.25 5.25h13.5a1.5 1.5 0 011.5 1.5v10.5a1.5 1.5 0 01-1.5 1.5H5.25a1.5 1.5 0 01-1.5-1.5V6.75zm0 3h16.5m0 3.75H3.75M9.75 9.75v8.25m4.5-8.25v8.25"
+      />
+    </svg>
+  );
+}
+
 export function PlugIcon(props: SVGProps<SVGSVGElement>) {
   return (
     <svg {...base(props)}>

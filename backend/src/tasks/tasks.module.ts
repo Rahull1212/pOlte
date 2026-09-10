@@ -9,9 +9,20 @@ import { RegionsModule } from "../regions/regions.module";
 import { AiModule } from "../ai/ai.module";
 import { WhatsAppApiModule } from "../whatsapp-api/whatsapp-api.module";
 import { FyxoWhatsAppModule } from "../fyxo-whatsapp/fyxo-whatsapp.module";
+import { GoogleSheetsModule } from "../google-sheets/google-sheets.module";
+import { MessageTemplatesModule } from "../message-templates/message-templates.module";
 
 @Module({
-  imports: [AllocationsModule, NotificationsModule, RegionsModule, AiModule, WhatsAppApiModule, FyxoWhatsAppModule],
+  imports: [
+    AllocationsModule,
+    NotificationsModule,
+    RegionsModule,
+    AiModule,
+    WhatsAppApiModule,
+    FyxoWhatsAppModule,
+    GoogleSheetsModule,
+    MessageTemplatesModule,
+  ],
   controllers: [TasksController, TaskAnalyticsController],
   providers: [TasksService, TaskAnalyticsService],
   exports: [TasksService],

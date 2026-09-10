@@ -3,26 +3,50 @@ import { CreateTaskBatchDto, CreateTaskDto, ProgressUpdateDto, TaskStatus, Updat
 import { PrismaService } from "../prisma/prisma.service";
 import { AuthenticatedUser } from "../auth/types";
 import { AllocationsService } from "../allocations/allocations.service";
-import { NotificationsService } from "../notifications/notifications.service";
+import { NotificationsService, SheetMessageContext } from "../notifications/notifications.service";
 import { RegionsService } from "../regions/regions.service";
 import { AiService } from "../ai/ai.service";
 import { WhatsAppApiService } from "../whatsapp-api/whatsapp-api.service";
 import { FyxoWhatsAppService } from "../fyxo-whatsapp/fyxo-whatsapp.service";
-import { FYXO_TEMPLATES } from "../fyxo-whatsapp/templates";
+import { FYXO_TEMPLATES, renderFyxoBody } from "../fyxo-whatsapp/templates";
+import { GoogleSheetsService } from "../google-sheets/google-sheets.service";
+import { MessageTemplatesService } from "../message-templates/message-templates.service";
 
-// The real approved "polios" template's only body variable is the Cadre's
-// name — "Hi {{1}}, we have assigned a task to you please check" — the task
-// itself is never in the message body; the Cadre gets it by tapping the
-// template's built-in "Task Details" button instead (handled via the
-// Fyxo webhook once its real button-tap payload has been inspected — not
-// invented — see FyxoAgentJobsProcessor). taskName/deadline are unused here
-// today but kept as params in case a future confirmed template needs them.
-function taskAssignedTemplate(_taskName: string, _deadline: Date) {
+// Every task-assignment template's only body variable is the Cadre's name —
+// the approved "polios" one reads "Hi {{1}}, we have assigned a task to you
+// please check". The task itself is never in the message body; the Cadre
+// gets it by tapping the template's built-in "Task Details" button instead
+// (handled via the Fyxo webhook once its real button-tap payload has been
+// inspected — not invented — see FyxoAgentJobsProcessor).
+//
+// Which template that is depends on who created the task: a Super Admin's
+// own, or the individual Admin's (MessageTemplatesService.resolveFor),
+// falling back to the shared "polios" default when none is assigned. All of
+// them are assumed to share this one-variable shape — a per-Admin template
+// with a different variable count would need its own handling here.
+function taskAssignedTemplate(owner: TemplateOwnerFields) {
   return {
-    ...FYXO_TEMPLATES.TASK_ASSIGNED,
+    ...MessageTemplatesService.resolveFor(owner),
     variablesFor: (cadreName: string) => [cadreName],
   };
 }
+
+// The template-owning columns on a User row — whoever created the task.
+type TemplateOwnerFields = {
+  fyxoTemplateName: string | null;
+  fyxoTemplateLanguage: string | null;
+  fyxoTemplateBody: string | null;
+};
+
+// Everything the sheet log and the template resolver need about a task's
+// creator, in one reusable Prisma select.
+const TEMPLATE_OWNER_SELECT = {
+  name: true,
+  role: true,
+  fyxoTemplateName: true,
+  fyxoTemplateLanguage: true,
+  fyxoTemplateBody: true,
+} as const;
 
 @Injectable()
 export class TasksService {
@@ -34,7 +58,76 @@ export class TasksService {
     private readonly aiService: AiService,
     private readonly whatsAppApi: WhatsAppApiService,
     private readonly fyxoWhatsApp: FyxoWhatsAppService,
+    private readonly googleSheets: GoogleSheetsService,
   ) {}
+
+  /**
+   * Which sheet tab a task's messages are logged to, and the extra columns
+   * that go with them.
+   *
+   * The tab follows whoever CREATED the task, not who sent the message:
+   *   - Super Admin created it (an Admin then allocates it) -> the connected
+   *     default tab, so the Super Admin sees their own tasks in one place
+   *     with the allocating Admin named in the "Assigned By" column.
+   *   - An Admin created it themselves -> that Admin's own tab, created on
+   *     first send, so each Admin's independent work is separated out.
+   * Either way it's the same Super-Admin-connected spreadsheet.
+   */
+  private sheetContext(
+    taskName: string,
+    createdBy: { name: string; role: string },
+    assignedByName: string,
+  ): SheetMessageContext {
+    return {
+      taskName,
+      assignedByName,
+      tab: createdBy.role === "ADMIN" ? createdBy.name : null,
+    };
+  }
+
+  /**
+   * sheetContext() for an already-created Task row. A Task always has an
+   * assigner but not always a batch (create() makes single tasks directly),
+   * so a batch-less task falls back to its assigner as the creator — which
+   * for a directly-created task is the same person anyway.
+   */
+  private taskSheetContext(task: {
+    name: string;
+    assignedBy: { name: string; role: string };
+    batch: { createdBy: { name: string; role: string } } | null;
+  }): SheetMessageContext {
+    return this.sheetContext(task.name, task.batch?.createdBy ?? task.assignedBy, task.assignedBy.name);
+  }
+
+  /**
+   * Mirrors an outbound task WhatsApp message into the Google Sheet log.
+   * Sends routed through NotificationsService are logged there instead (see
+   * its logToSheet) — this covers the two paths that call Fyxo/Meta
+   * directly: retryWhatsapp() and sendCompletionCheck(). Never throws; the
+   * sheet is a reporting side-channel, not part of the send's success.
+   */
+  private async logToSheet(
+    name: string,
+    phone: string,
+    message: string,
+    success: boolean,
+    context: SheetMessageContext,
+  ) {
+    try {
+      await this.googleSheets.appendTaskMessageRow({
+        name,
+        phone,
+        message,
+        taskName: context.taskName,
+        assignedByName: context.assignedByName,
+        tab: context.tab,
+        status: success ? "SENT" : "FAILED",
+        sentAt: new Date(),
+      });
+    } catch {
+      // already logged by GoogleSheetsService
+    }
+  }
 
   async create(dto: CreateTaskDto, user: AuthenticatedUser) {
     const assignee = await this.prisma.user.findUnique({ where: { id: dto.assignedToId } });
@@ -56,6 +149,13 @@ export class TasksService {
       },
     });
 
+    // A directly-created task has no batch, so its creator *is* its
+    // assigner — that's whose template and sheet tab it uses.
+    const creator = await this.prisma.user.findUniqueOrThrow({
+      where: { id: user.id },
+      select: TEMPLATE_OWNER_SELECT,
+    });
+
     await this.notificationsService.notify({
       userId: dto.assignedToId,
       type: "TASK_ASSIGNED",
@@ -63,26 +163,27 @@ export class TasksService {
       message: `${task.name} — due ${task.deadline.toDateString()}. Reply YES to accept or NO to decline.`,
       relatedEntityType: "Task",
       relatedEntityId: task.id,
-      fyxoTemplate: taskAssignedTemplate(task.name, task.deadline),
+      fyxoTemplate: taskAssignedTemplate(creator),
+      sheetContext: this.sheetContext(task.name, creator, user.name),
     });
 
     return task;
   }
 
   /**
-   * One "Create Task" submission fans out to every active Cadre under the
-   * selected District(s)/Mandal(s)/Booth(s) — one Task row per resolved
-   * Cadre, grouped under a TaskBatch. Reuses the exact same Task/
-   * ProgressUpdate/WhatsApp-notification machinery as a single-assignee
-   * task; nothing about how a Cadre completes or is notified about a task
-   * changes, only how many get created and assigned in one action.
+   * Creates a TaskBatch — the task record itself — without sending anything
+   * to any Cadre yet. Allocation (picking which Cadres, actually sending the
+   * WhatsApp messages) is always a deliberate follow-up step via
+   * allocateToCadres(), for a SUPER_ADMIN's batch *and* an ADMIN's own,
+   * consistently — creating a task no longer implicitly fans it out.
    *
-   * A SUPER_ADMIN's batch is the one exception: it does NOT fan out to
-   * Cadres immediately. It's routed to whichever Admins cover the selected
-   * area(s) (awaitingAllocation: true, zero Task rows) — each Admin reviews
-   * it and allocates it to their own Cadres via allocateToCadres(), which is
-   * what actually creates the Task rows and sends the WhatsApp messages. An
-   * ADMIN creating a task still goes straight to Cadres, unchanged.
+   * A SUPER_ADMIN's batch has no Cadres of their own, so it's routed by
+   * notifying whichever Admins cover the selected area(s); an ADMIN's own
+   * batch is routed the same way (findAdminsForRegions naturally includes
+   * themselves, alongside any broader-scoped Admin over the same area), so
+   * it shows up on their own Pending Allocation list as a reminder — see
+   * listTasks()/listPendingAllocation(), which already treat "awaiting
+   * allocation" uniformly regardless of who created the batch.
    */
   async createBatch(dto: CreateTaskBatchDto, user: AuthenticatedUser) {
     if (user.role !== "SUPER_ADMIN") {
@@ -92,53 +193,6 @@ export class TasksService {
           throw new ForbiddenException("One or more selected areas are outside your own area");
         }
       }
-    }
-
-    if (user.role === "SUPER_ADMIN") {
-      const batch = await this.prisma.taskBatch.create({
-        data: {
-          name: dto.name,
-          objective: dto.objective,
-          description: dto.description,
-          additionalDetails: dto.additionalDetails,
-          remarks: dto.remarks,
-          deadline: dto.deadline,
-          priority: dto.priority,
-          campaignId: dto.campaignId,
-          targetRegionIds: dto.regionIds,
-          attachmentUrls: dto.attachmentUrls,
-          createdById: user.id,
-          awaitingAllocation: true,
-        },
-      });
-
-      const admins = await this.findAdminsForRegions(dto.regionIds);
-      if (admins.length > 0) {
-        await this.notificationsService.notifyMany(
-          admins.map((a) => a.id),
-          {
-            type: "TASK_PENDING_ALLOCATION",
-            title: "Task awaiting your allocation",
-            message: `"${dto.name}" was routed to your area — review it and allocate it to your Cadres.`,
-            relatedEntityType: "Task",
-            relatedEntityId: batch.id,
-          },
-        );
-      }
-
-      return { batch, cadreCount: 0, awaitingAllocation: true };
-    }
-
-    const cadres =
-      dto.cadreIds && dto.cadreIds.length > 0
-        ? await this.resolveNamedCadres(dto.cadreIds, user)
-        : await this.resolveAreaCadres(dto.regionIds);
-    if (cadres.length === 0) {
-      throw new BadRequestException(
-        dto.cadreIds && dto.cadreIds.length > 0
-          ? "No active Cadres found among the selected Cadres"
-          : "No active Cadres found in the selected area(s)",
-      );
     }
 
     const batch = await this.prisma.taskBatch.create({
@@ -154,65 +208,25 @@ export class TasksService {
         targetRegionIds: dto.regionIds,
         attachmentUrls: dto.attachmentUrls,
         createdById: user.id,
+        awaitingAllocation: true,
       },
     });
 
-    const createdTasks = await this.prisma.$transaction(
-      cadres.map((cadre) =>
-        this.prisma.task.create({
-          data: {
-            batchId: batch.id,
-            campaignId: dto.campaignId,
-            name: dto.name,
-            objective: dto.objective,
-            description: dto.description,
-            additionalDetails: dto.additionalDetails,
-            remarks: dto.remarks,
-            assignedToId: cadre.id,
-            assignedById: user.id,
-            deadline: dto.deadline,
-            priority: dto.priority,
-          },
-        }),
-      ),
-    );
+    const admins = await this.findAdminsForRegions(dto.regionIds);
+    if (admins.length > 0) {
+      await this.notificationsService.notifyMany(
+        admins.map((a) => a.id),
+        {
+          type: "TASK_PENDING_ALLOCATION",
+          title: "Task awaiting your allocation",
+          message: `"${dto.name}" was created and is ready to allocate to your Cadres.`,
+          relatedEntityType: "Task",
+          relatedEntityId: batch.id,
+        },
+      );
+    }
 
-    // Captured and persisted per Task below (not fired-and-forgotten) so a
-    // later webhook-driven interaction — the "polios" template's Task
-    // Details button — can be deterministically correlated back to exactly
-    // this assignment via fyxoMessageId, the same way allocateToCadres()
-    // does for a routed batch.
-    const whatsappResults = await this.notificationsService.notifyMany(
-      cadres.map((c) => c.id),
-      {
-        type: "TASK_ASSIGNED",
-        title: "New task assigned",
-        message: `${dto.name} — due ${dto.deadline.toDateString()}. Reply YES to accept or NO to decline.`,
-        relatedEntityType: "Task",
-        relatedEntityId: batch.id,
-        fyxoTemplate: taskAssignedTemplate(dto.name, dto.deadline),
-      },
-    );
-
-    const sentAt = new Date();
-    await this.prisma.$transaction(
-      createdTasks.map((t) => {
-        const result = whatsappResults.get(t.assignedToId);
-        const succeeded = result?.success ?? true;
-        return this.prisma.task.update({
-          where: { id: t.id },
-          data: {
-            whatsappStatus: succeeded ? "SENT" : "FAILED",
-            whatsappSentAt: succeeded ? sentAt : null,
-            whatsappMessageId: result?.channel === "META" ? result.messageId : undefined,
-            fyxoMessageId: result?.channel === "FYXO" ? result.messageId : undefined,
-            fyxoTemplateName: result?.channel === "FYXO" ? FYXO_TEMPLATES.TASK_ASSIGNED.name : undefined,
-          },
-        });
-      }),
-    );
-
-    return { batch, cadreCount: cadres.length, awaitingAllocation: false };
+    return { batch, cadreCount: 0, awaitingAllocation: true };
   }
 
   /** Every active Cadre named directly, validated to be within the given Admin's own region scope. */
@@ -258,7 +272,13 @@ export class TasksService {
       throw new ForbiddenException("Only Admins allocate tasks to Cadres");
     }
 
-    const batch = await this.prisma.taskBatch.findUnique({ where: { id: batchId } });
+    const batch = await this.prisma.taskBatch.findUnique({
+      where: { id: batchId },
+      // createdBy drives both which template goes out (taskAssignedTemplate)
+      // and which sheet tab it's logged to (sheetContext) — the same owner
+      // for both, deliberately.
+      include: { createdBy: { select: TEMPLATE_OWNER_SELECT } },
+    });
     if (!batch) throw new NotFoundException("Task not found");
     if (!batch.awaitingAllocation) {
       throw new BadRequestException("This task does not require allocation");
@@ -332,6 +352,8 @@ export class TasksService {
       ),
     );
 
+    const allocationTemplate = taskAssignedTemplate(batch.createdBy);
+
     // notifyMany reports per-Cadre WhatsApp success/failure — persisted onto
     // each Task row so a partial failure is visible and retryable rather
     // than silently lost (see retryWhatsapp()).
@@ -343,7 +365,11 @@ export class TasksService {
         message: `${batch.name} — due ${batch.deadline.toDateString()}. Reply YES to accept or NO to decline.`,
         relatedEntityType: "Task",
         relatedEntityId: batch.id,
-        fyxoTemplate: taskAssignedTemplate(batch.name, batch.deadline),
+        // The task creator's template — the Super Admin's for a task they
+        // routed here, this Admin's own for one they created themselves.
+        fyxoTemplate: allocationTemplate,
+        // user is the allocating Admin — the "Assigned By" column.
+        sheetContext: this.sheetContext(batch.name, batch.createdBy, user.name),
       },
     );
 
@@ -359,7 +385,10 @@ export class TasksService {
             whatsappSentAt: succeeded ? now : null,
             whatsappMessageId: result?.channel === "META" ? result.messageId : undefined,
             fyxoMessageId: result?.channel === "FYXO" ? result.messageId : undefined,
-            fyxoTemplateName: result?.channel === "FYXO" ? FYXO_TEMPLATES.TASK_ASSIGNED.name : undefined,
+            // The template this specific task actually went out with, so a
+            // later retry repeats it rather than reverting to the default
+            // (an Admin's template can be reassigned in between).
+            fyxoTemplateName: result?.channel === "FYXO" ? allocationTemplate.name : undefined,
           },
         });
       }),
@@ -400,35 +429,60 @@ export class TasksService {
   async retryWhatsapp(taskId: string, user: AuthenticatedUser) {
     const task = await this.prisma.task.findUnique({
       where: { id: taskId },
-      include: { assignedTo: { select: { id: true, name: true, phone: true, regionId: true } } },
+      include: {
+        assignedTo: { select: { id: true, name: true, phone: true, regionId: true } },
+        // The batch's creator owns both the template and the sheet tab;
+        // assignedBy is the "Assigned By" column (and the creator fallback
+        // for a task that has no batch).
+        assignedBy: { select: TEMPLATE_OWNER_SELECT },
+        batch: { select: { createdBy: { select: TEMPLATE_OWNER_SELECT } } },
+      },
     });
     if (!task) throw new NotFoundException("Task not found");
     await this.assertVisible([task.assignedTo.regionId], user);
 
     if (task.fyxoMessageId !== null) {
-      const idempotencyKey = `assignment-${task.id}-${FYXO_TEMPLATES.TASK_ASSIGNED.name}-retry-${Date.now()}`;
+      // Repeat the template this task actually went out with, recorded at
+      // send time — resolving the owner's template afresh could pick up a
+      // different one if the Super Admin reassigned it in between, which
+      // would make the retry a different message than the one being retried.
+      const owner = task.batch?.createdBy ?? task.assignedBy;
+      const resolved = taskAssignedTemplate(owner);
+      const template = task.fyxoTemplateName
+        ? { name: task.fyxoTemplateName, language: resolved.language, body: resolved.body }
+        : resolved;
+
+      const idempotencyKey = `assignment-${task.id}-${template.name}-retry-${Date.now()}`;
       const result = await this.fyxoWhatsApp.sendTemplateMessage({
         to: task.assignedTo.phone,
-        templateName: FYXO_TEMPLATES.TASK_ASSIGNED.name,
-        templateLanguage: FYXO_TEMPLATES.TASK_ASSIGNED.language,
-        // The approved "polios" template's only body variable is the
-        // Cadre's name — see taskAssignedTemplate()'s doc comment.
+        templateName: template.name,
+        templateLanguage: template.language,
+        // Every assignment template's only body variable is the Cadre's
+        // name — see taskAssignedTemplate()'s doc comment.
         variables: [task.assignedTo.name],
         idempotencyKey,
       });
+      await this.logToSheet(
+        task.assignedTo.name,
+        task.assignedTo.phone,
+        renderFyxoBody(template, [task.assignedTo.name]),
+        result.success,
+        this.taskSheetContext(task),
+      );
       return this.prisma.task.update({
         where: { id: taskId },
         data: {
           whatsappStatus: result.success ? "SENT" : "FAILED",
           whatsappSentAt: result.success ? new Date() : task.whatsappSentAt,
           fyxoMessageId: result.messageId ?? task.fyxoMessageId,
-          fyxoTemplateName: FYXO_TEMPLATES.TASK_ASSIGNED.name,
+          fyxoTemplateName: template.name,
         },
       });
     }
 
     const message = `*New task assigned*\n${task.name} — due ${task.deadline.toDateString()}. Reply YES to accept or NO to decline.\n\n(Reply MENU to open PoliOS)`;
     const result = await this.whatsAppApi.sendText(task.assignedTo.phone, message);
+    await this.logToSheet(task.assignedTo.name, task.assignedTo.phone, message, result.success, this.taskSheetContext(task));
 
     return this.prisma.task.update({
       where: { id: taskId },
@@ -678,6 +732,75 @@ export class TasksService {
     return this.prisma.task.update({
       where: { id: taskId },
       data: { status: "CANCELLED", needsReassignment: false },
+    });
+  }
+
+  /**
+   * Sends the "Have you completed your task?" Yes/No check-in to one
+   * Cadre — an explicit Admin action, not automatic, since not every task
+   * needs one (see completionConfirmation's schema comment for why null vs
+   * AWAITING matters). Requires FYXO_TEMPLATES.TASK_COMPLETION_CHECK to
+   * actually be approved in Fyxo; until then FyxoWhatsAppService degrades
+   * to a simulated send like every other Fyxo call in this app, so this
+   * still "succeeds" but nothing real goes out.
+   *
+   * Recording the Yes/No reply itself happens on the webhook side once its
+   * real button-tap payload shape is confirmed (see ConversationRouterService)
+   * — not yet wired here.
+   */
+  async sendCompletionCheck(taskId: string, user: AuthenticatedUser) {
+    if (user.role === "CADRE") {
+      throw new ForbiddenException("Cadres cannot send completion checks");
+    }
+
+    const task = await this.prisma.task.findUnique({
+      where: { id: taskId },
+      include: {
+        assignedTo: { select: { id: true, name: true, phone: true, regionId: true } },
+        // The batch's creator owns both the template and the sheet tab;
+        // assignedBy is the "Assigned By" column (and the creator fallback
+        // for a task that has no batch).
+        assignedBy: { select: TEMPLATE_OWNER_SELECT },
+        batch: { select: { createdBy: { select: TEMPLATE_OWNER_SELECT } } },
+      },
+    });
+    if (!task) throw new NotFoundException("Task not found");
+    await this.assertVisible([task.assignedTo.regionId], user);
+
+    if (task.status === "CANCELLED") {
+      throw new BadRequestException(`${task.assignedTo.name} was removed from this task — nothing to check in on`);
+    }
+
+    const idempotencyKey = `completion-check-${task.id}-${Date.now()}`;
+    const result = await this.fyxoWhatsApp.sendTemplateMessage({
+      to: task.assignedTo.phone,
+      templateName: FYXO_TEMPLATES.TASK_COMPLETION_CHECK.name,
+      templateLanguage: FYXO_TEMPLATES.TASK_COMPLETION_CHECK.language,
+      variables: [task.assignedTo.name],
+      idempotencyKey,
+    });
+
+    // Logged before the failure throw below, so a failed check-in still
+    // leaves a FAILED row rather than vanishing from the sheet entirely.
+    await this.logToSheet(
+      task.assignedTo.name,
+      task.assignedTo.phone,
+      renderFyxoBody(FYXO_TEMPLATES.TASK_COMPLETION_CHECK, [task.assignedTo.name]),
+      result.success,
+      this.taskSheetContext(task),
+    );
+
+    if (!result.success) {
+      throw new BadRequestException(`Failed to send completion check: ${result.error ?? "unknown error"}`);
+    }
+
+    return this.prisma.task.update({
+      where: { id: taskId },
+      data: {
+        completionCheckSentAt: new Date(),
+        completionCheckFyxoMessageId: result.messageId,
+        completionConfirmation: "AWAITING",
+      },
     });
   }
 
@@ -1135,6 +1258,9 @@ export class TasksService {
       deliveredAt: Date | null;
       readAt: Date | null;
       completedAt: Date | null;
+      completionCheckSentAt: Date | null;
+      completionConfirmation: string | null;
+      completionConfirmedAt: Date | null;
       createdAt: Date;
       assignedTo: { id: string; name: string; regionId: string; region: { name: string; type: string } };
       progress: { completionPercentage: number; createdAt: Date }[];
@@ -1179,6 +1305,14 @@ export class TasksService {
     const whatsappFailed = activeTasks.filter((t) => t.whatsappStatus === "FAILED").length;
     const responded = activeTasks.filter((t) => t.acknowledgment !== "AWAITING").length;
 
+    // "Have you completed your task?" check-in — only counted among Cadres
+    // an Admin actually asked (completionConfirmation !== null); most tasks
+    // are never asked at all, and those shouldn't dilute the Yes/No split.
+    const asked = activeTasks.filter((t) => t.completionConfirmation !== null);
+    const completionYes = asked.filter((t) => t.completionConfirmation === "YES").length;
+    const completionNo = asked.filter((t) => t.completionConfirmation === "NO").length;
+    const completionAwaiting = asked.filter((t) => t.completionConfirmation === "AWAITING").length;
+
     const kpis = {
       totalAssigned: activeTasks.length,
       cancelled,
@@ -1197,6 +1331,10 @@ export class TasksService {
       whatsappRead,
       whatsappFailed,
       responded,
+      completionAsked: asked.length,
+      completionYes,
+      completionNo,
+      completionAwaiting,
     };
 
     // "At least reached this stage" funnel, in lifecycle order — each stage
@@ -1215,7 +1353,16 @@ export class TasksService {
     const regionById = await this.allRegionsById();
 
     const cadres = tasks.map((t) => {
-      const lastActivityAt = [t.whatsappSentAt, t.deliveredAt, t.readAt, t.acknowledgedAt, t.completedAt, t.progress[0]?.createdAt]
+      const lastActivityAt = [
+        t.whatsappSentAt,
+        t.deliveredAt,
+        t.readAt,
+        t.acknowledgedAt,
+        t.completedAt,
+        t.completionCheckSentAt,
+        t.completionConfirmedAt,
+        t.progress[0]?.createdAt,
+      ]
         .filter((d): d is Date => d instanceof Date)
         .sort((a, b) => b.getTime() - a.getTime())[0];
       return {
@@ -1230,6 +1377,9 @@ export class TasksService {
         progressPct: this.progressPct(t),
         whatsappStatus: t.whatsappStatus,
         whatsappSentAt: t.whatsappSentAt,
+        completionConfirmation: t.completionConfirmation,
+        completionCheckSentAt: t.completionCheckSentAt,
+        completionConfirmedAt: t.completionConfirmedAt,
         lastActivityAt: lastActivityAt ?? null,
       };
     });

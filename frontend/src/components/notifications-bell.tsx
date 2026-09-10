@@ -13,6 +13,8 @@ function resolveNotificationLink(n: AppNotification): string | null {
   switch (n.relatedEntityType) {
     case "Task":
       return `/tasks/${n.relatedEntityId}`;
+    case "Poll":
+      return `/polls/${n.relatedEntityId}`;
     case "Event":
       return `/events/${n.relatedEntityId}`;
     case "Campaign":

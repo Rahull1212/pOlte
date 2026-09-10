@@ -100,8 +100,8 @@ export default function TaskDetailPage() {
 
       {task.awaitingAllocation && (
         <div className="mb-5 rounded-md border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-800">
-          This task was routed to your area by a Super Admin and hasn't been sent to any Cadres yet. Click
-          "Allocate to Cadres" to choose who it goes to — it's sent via WhatsApp only once you allocate it.
+          This task hasn't been sent to any Cadres yet. Click "Allocate to Cadres" to choose who it goes to — it's
+          sent via WhatsApp only once you allocate it.
         </div>
       )}
 

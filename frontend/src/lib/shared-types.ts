@@ -69,6 +69,7 @@ export const NotificationType = [
   "TASK_DECLINED",
   "TASK_PENDING_ALLOCATION",
   "TASK_ALLOCATED",
+  "POLL_PENDING_ALLOCATION",
 ] as const;
 export type NotificationType = (typeof NotificationType)[number];
 
@@ -240,8 +241,9 @@ export const updateTaskSchema = z.object({
 });
 export type UpdateTaskDto = z.infer<typeof updateTaskSchema>;
 
-// Bulk task creation: one submission fans out to every active Cadre under
-// the selected District(s)/Mandal(s)/Booth(s) — see TasksService.createBatch.
+// Creates a TaskBatch — the task record — without sending anything to any
+// Cadre yet. Always awaits allocation: see allocateTaskSchema below (the
+// actual "pick Cadres and send" step).
 export const createTaskBatchSchema = z.object({
   name: z.string().min(2).max(150),
   objective: z.string().optional(),
@@ -252,12 +254,6 @@ export const createTaskBatchSchema = z.object({
   priority: z.enum(TaskPriority).default("MEDIUM"),
   campaignId: z.string().optional(),
   regionIds: z.array(z.string().min(1)).min(1, "Select at least one area"),
-  // When an Admin creates a task and hand-picks specific Cadres, this
-  // narrows delivery to exactly those Cadres instead of broadcasting to
-  // every active Cadre in the selected area(s). Left empty (the default,
-  // and always for a Super Admin's routed batch), the area broadcast
-  // behavior is unchanged.
-  cadreIds: z.array(z.string().min(1)).default([]),
   attachmentUrls: z.array(z.string().url()).default([]),
 });
 export type CreateTaskBatchDto = z.infer<typeof createTaskBatchSchema>;
@@ -279,6 +275,101 @@ export const allocateTaskSchema = z
     message: "Select at least one area or Cadre",
   });
 export type AllocateTaskDto = z.infer<typeof allocateTaskSchema>;
+
+// ============================================================
+// POLLS
+// ============================================================
+// Same two-step shape as tasks: create the record (no send), then allocate
+// it to Cadres (that's what actually sends it) — see PollsService.
+
+// 2-3 options: capped by how many Quick Reply buttons a WhatsApp template
+// can carry — see FYXO_TEMPLATES.POLL's doc comment.
+export const createPollSchema = z.object({
+  question: z.string().min(3).max(300),
+  options: z.array(z.string().min(1).max(60)).min(2, "Add at least 2 options").max(3, "A poll can have at most 3 options"),
+  regionIds: z.array(z.string().min(1)).min(1, "Select at least one area"),
+  deadline: z.coerce.date().optional(),
+});
+export type CreatePollDto = z.infer<typeof createPollSchema>;
+
+// Same regionIds/cadreIds-or-both shape as allocateTaskSchema.
+export const allocatePollSchema = z
+  .object({
+    regionIds: z.array(z.string().min(1)).default([]),
+    cadreIds: z.array(z.string().min(1)).default([]),
+  })
+  .refine((d) => d.regionIds.length > 0 || d.cadreIds.length > 0, {
+    message: "Select at least one area or Cadre",
+  });
+export type AllocatePollDto = z.infer<typeof allocatePollSchema>;
+
+// ============================================================
+// GOOGLE SHEET (task message log)
+// ============================================================
+// A Super Admin connects the sheet from the app itself, so the URL is
+// whatever they pasted out of the browser — GoogleSheetsService.connect
+// extracts the spreadsheet id from it (or accepts a bare id), which is why
+// this only checks it's non-empty rather than trying to match a URL shape
+// here and rejecting a link Google would have accepted.
+export const connectSheetSchema = z.object({
+  spreadsheetUrl: z.string().min(1, "Paste the Google Sheet link"),
+  // Defaults to "Task Messages" server-side; the tab is created if the
+  // spreadsheet doesn't have one by that name yet.
+  tabName: z.string().max(100).optional(),
+});
+export type ConnectSheetDto = z.infer<typeof connectSheetSchema>;
+
+// The service-account key file, pasted whole. Only checked for "is there
+// something here" — the real validation (is it JSON, is it a service
+// account, is the key intact) happens in GoogleSheetsService.saveServiceAccount,
+// which can give a specific, fixable message per failure instead of one
+// generic schema error.
+export const saveGoogleCredentialsSchema = z.object({
+  serviceAccountJson: z.string().min(1, "Paste the contents of the JSON key file"),
+});
+export type SaveGoogleCredentialsDto = z.infer<typeof saveGoogleCredentialsSchema>;
+
+// The one-time OAuth app registration from Google Cloud. An application
+// identity, not a user's credentials — set once per install, then the Super
+// Admin only ever clicks "Connect Google Sheets".
+export const saveGoogleOAuthAppSchema = z.object({
+  clientId: z.string().min(1, "Paste the OAuth Client ID"),
+  clientSecret: z.string().min(1, "Paste the OAuth Client secret"),
+});
+export type SaveGoogleOAuthAppDto = z.infer<typeof saveGoogleOAuthAppSchema>;
+
+// Picking a sheet from the signed-in account's own Drive — an id straight
+// from the picker list, so unlike connectSheetSchema there's no URL to parse.
+export const selectSpreadsheetSchema = z.object({
+  spreadsheetId: z.string().min(1),
+  tabName: z.string().max(100).optional(),
+});
+export type SelectSpreadsheetDto = z.infer<typeof selectSpreadsheetSchema>;
+
+// ============================================================
+// PER-ADMIN WHATSAPP TEMPLATE
+// ============================================================
+// A Super Admin records which already-approved WhatsApp template each Admin's
+// own tasks go out with (and one for themselves); several Admins may share
+// the same template. PoliOS cannot create or approve templates — this only
+// points at a name that already exists in Fyxo/Meta, so a typo here surfaces
+// as a failed send, not a validation error.
+export const assignMessageTemplateSchema = z.object({
+  // Meta's own naming rule for approved templates: lowercase letters,
+  // digits and underscores only. Checked here so an obviously-wrong name
+  // (e.g. "My Template") is caught before it can silently fail every send.
+  templateName: z
+    .string()
+    .min(1, "Enter the approved template name")
+    .max(100)
+    .regex(/^[a-z0-9_]+$/, "Template names use lowercase letters, numbers and underscores only (e.g. polios_east)"),
+  templateLanguage: z.string().min(2).max(10).default("en"),
+  // The approved body copy, {{1}} included. Optional, and never sent —
+  // it's only used to render what the Cadre reads into the Google Sheet log
+  // and the preview on screen.
+  templateBody: z.string().max(1000).optional(),
+});
+export type AssignMessageTemplateDto = z.infer<typeof assignMessageTemplateSchema>;
 
 // Shared by both Ask AI surfaces: the per-task dashboard (filters unused)
 // and the global Communication & AI Insights dashboard (filters optional —

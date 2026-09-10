@@ -8,6 +8,7 @@ import { RegionsModule } from "./regions/regions.module";
 import { CampaignsModule } from "./campaigns/campaigns.module";
 import { AllocationsModule } from "./allocations/allocations.module";
 import { TasksModule } from "./tasks/tasks.module";
+import { PollsModule } from "./polls/polls.module";
 import { ExpensesModule } from "./expenses/expenses.module";
 import { CommunicationModule } from "./communication/communication.module";
 import { NotificationsModule } from "./notifications/notifications.module";
@@ -21,6 +22,8 @@ import { WhatsAppModule } from "./whatsapp/whatsapp.module";
 import { AuditModule } from "./audit/audit.module";
 import { BulkMessagingModule } from "./bulk-messaging/bulk-messaging.module";
 import { FyxoAgentModule } from "./fyxo-agent/fyxo-agent.module";
+import { GoogleSheetsModule } from "./google-sheets/google-sheets.module";
+import { MessageTemplatesModule } from "./message-templates/message-templates.module";
 import { JwtAuthGuard } from "./common/guards/jwt-auth.guard";
 import { AuditLogInterceptor } from "./common/interceptors/audit-log.interceptor";
 
@@ -34,6 +37,7 @@ import { AuditLogInterceptor } from "./common/interceptors/audit-log.interceptor
     CampaignsModule,
     AllocationsModule,
     TasksModule,
+    PollsModule,
     ExpensesModule,
     CommunicationModule,
     NotificationsModule,
@@ -47,6 +51,8 @@ import { AuditLogInterceptor } from "./common/interceptors/audit-log.interceptor
     AuditModule,
     BulkMessagingModule,
     FyxoAgentModule,
+    GoogleSheetsModule,
+    MessageTemplatesModule,
   ],
   providers: [
     { provide: APP_GUARD, useClass: JwtAuthGuard },

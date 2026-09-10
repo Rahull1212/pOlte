@@ -11,7 +11,6 @@ import { useCreateTaskBatch, useUploadTaskAttachments } from "@/hooks/use-tasks"
 import { useCampaigns } from "@/hooks/use-campaigns";
 import { useRegions } from "@/hooks/use-regions";
 import { useCurrentUser } from "@/hooks/use-auth";
-import { useManagedUsers } from "@/hooks/use-users";
 import { TaskPriority } from "@/lib/shared-types";
 
 const PRIORITY_LABELS: Record<TaskPriority, string> = {
@@ -26,10 +25,6 @@ export default function CreateTaskPage() {
   const { data: currentUser } = useCurrentUser();
   const { data: campaigns } = useCampaigns();
   const { data: regions } = useRegions();
-  // Only an Admin creating a task sends straight to Cadres, so only an
-  // Admin can narrow that down to specific Cadres — a Super Admin's batch
-  // routes to Admins, not Cadres, so per-Cadre picking doesn't apply there.
-  const { data: myCadres } = useManagedUsers(currentUser?.role === "ADMIN" ? "CADRE" : undefined);
   const createBatch = useCreateTaskBatch();
   const uploadAttachments = useUploadTaskAttachments();
 
@@ -37,7 +32,6 @@ export default function CreateTaskPage() {
   const [districtIds, setDistrictIds] = useState<string[]>([]);
   const [mandalIds, setMandalIds] = useState<string[]>([]);
   const [boothIds, setBoothIds] = useState<string[]>([]);
-  const [cadreIds, setCadreIds] = useState<string[]>([]);
   const [objective, setObjective] = useState("");
   const [description, setDescription] = useState("");
   const [deadline, setDeadline] = useState("");
@@ -46,14 +40,12 @@ export default function CreateTaskPage() {
   const [additionalDetails, setAdditionalDetails] = useState("");
   const [campaignId, setCampaignId] = useState("");
   const [files, setFiles] = useState<File[]>([]);
-  const [result, setResult] = useState<{ name: string; cadreCount: number; awaitingAllocation: boolean } | null>(null);
+  const [result, setResult] = useState<{ id: string; name: string } | null>(null);
   const [formError, setFormError] = useState<string | null>(null);
 
   // An Admin manages exactly one area (their own regionId) — the District/
   // Mandal/Booth drill-down exists so a Super Admin can route a task to
   // areas they don't personally sit in, which doesn't apply to an Admin.
-  // For an Admin, the target area is just their own region; they narrow who
-  // gets it via the Cadre checklist below instead.
   const isAdmin = currentUser?.role === "ADMIN";
   const regionIds = isAdmin ? (currentUser?.regionId ? [currentUser.regionId] : []) : [...districtIds, ...mandalIds, ...boothIds];
 
@@ -76,10 +68,6 @@ export default function CreateTaskPage() {
     setMandalIds(ids);
     const mandalSet = new Set(ids);
     setBoothIds((prev) => prev.filter((id) => isRegionWithinScope(id, mandalSet, byId)));
-  };
-
-  const toggleCadre = (id: string) => {
-    setCadreIds((prev) => (prev.includes(id) ? prev.filter((c) => c !== id) : [...prev, id]));
   };
 
   const onSubmit = async (e: React.FormEvent) => {
@@ -113,12 +101,10 @@ export default function CreateTaskPage() {
         priority,
         campaignId: campaignId || undefined,
         regionIds,
-        cadreIds,
         attachmentUrls,
       },
       {
-        onSuccess: (res) =>
-          setResult({ name: res.batch.name, cadreCount: res.cadreCount, awaitingAllocation: res.awaitingAllocation }),
+        onSuccess: (res) => setResult({ id: res.batch.id, name: res.batch.name }),
       },
     );
   };
@@ -128,27 +114,15 @@ export default function CreateTaskPage() {
       <AppShell>
         <Card className="mx-auto max-w-lg">
           <CardContent className="py-8 text-center">
-            {result.awaitingAllocation ? (
-              <>
-                <p className="text-lg font-semibold text-slate-900">Task routed to Admins</p>
-                <p className="mt-2 text-sm text-slate-600">
-                  "{result.name}" was sent to every Admin covering the selected area(s). It reaches Cadres via
-                  WhatsApp only once an Admin reviews it and allocates it.
-                </p>
-              </>
-            ) : (
-              <>
-                <p className="text-lg font-semibold text-slate-900">Task sent</p>
-                <p className="mt-2 text-sm text-slate-600">
-                  "{result.name}" was assigned to <span className="font-semibold">{result.cadreCount}</span> Cadre
-                  {result.cadreCount === 1 ? "" : "s"} and sent via WhatsApp.
-                </p>
-              </>
-            )}
+            <p className="text-lg font-semibold text-slate-900">Task created</p>
+            <p className="mt-2 text-sm text-slate-600">
+              "{result.name}" has been created. Nothing has been sent yet — allocate it to your Cadres next to
+              actually send it out over WhatsApp.
+            </p>
             <div className="mt-6 flex justify-center gap-2">
-              <Button onClick={() => router.push("/tasks")}>Go to Tasks</Button>
-              <Button variant="secondary" onClick={() => setResult(null)}>
-                Create another
+              <Button onClick={() => router.push(`/tasks/${result.id}/allocate`)}>Allocate to Cadres</Button>
+              <Button variant="secondary" onClick={() => router.push("/tasks")}>
+                Go to Tasks
               </Button>
             </div>
           </CardContent>
@@ -203,39 +177,10 @@ export default function CreateTaskPage() {
               </div>
             )}
             <p className="text-xs text-slate-500">
-              {cadreIds.length > 0
-                ? `This task will be sent only to the ${cadreIds.length} selected Cadre${cadreIds.length === 1 ? "" : "s"}, not your full area.`
-                : isAdmin
-                  ? "This task will be sent to every active Cadre in your area."
-                  : `This task will be sent to every active Cadre in the selected area(s) — ${regionIds.length} area${regionIds.length === 1 ? "" : "s"} selected so far.`}
+              {isAdmin
+                ? "This creates the task record only — nothing is sent yet. You'll choose which Cadres to send it to on the next screen."
+                : `This creates the task record only — nothing is sent yet. It'll be routed to the Admins covering the selected area(s) — ${regionIds.length} area${regionIds.length === 1 ? "" : "s"} selected so far — for them to allocate to their Cadres.`}
             </p>
-
-            {isAdmin && myCadres && myCadres.length > 0 && (
-              <div>
-                <Label>Assign to specific Cadres — optional</Label>
-                <p className="mb-1 text-xs text-slate-500">
-                  Leave unchecked to send to every active Cadre in your area. Check specific Cadres to send only to
-                  them instead.
-                </p>
-                <div className="max-h-48 space-y-1 overflow-y-auto rounded-md border border-slate-300 p-2">
-                  {myCadres.map((c) => (
-                    <label key={c.id} className="flex items-center gap-2 rounded px-1 py-1 text-sm hover:bg-slate-50">
-                      <input
-                        type="checkbox"
-                        checked={cadreIds.includes(c.id)}
-                        onChange={() => toggleCadre(c.id)}
-                        className="h-4 w-4 rounded border-slate-300"
-                      />
-                      <span className="text-slate-800">{c.name}</span>
-                      {c.region && <span className="text-xs text-slate-400">{c.region.name} ({c.region.type})</span>}
-                    </label>
-                  ))}
-                </div>
-                {cadreIds.length > 0 && (
-                  <p className="mt-1 text-xs text-slate-500">{cadreIds.length} Cadre(s) selected.</p>
-                )}
-              </div>
-            )}
 
             <div>
               <Label htmlFor="objective">Task Objective</Label>
@@ -331,7 +276,7 @@ export default function CreateTaskPage() {
               {uploadAttachments.isPending
                 ? "Uploading attachments..."
                 : createBatch.isPending
-                  ? "Creating & sending via WhatsApp..."
+                  ? "Creating..."
                   : "Create Task"}
             </Button>
           </CardContent>

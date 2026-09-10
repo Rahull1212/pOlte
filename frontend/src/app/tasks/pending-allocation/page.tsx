@@ -25,8 +25,8 @@ export default function PendingAllocationPage() {
         </Link>
         <h1 className="mt-1 text-lg font-semibold text-slate-900">Tasks Pending Your Allocation</h1>
         <p className="mt-1 text-sm text-slate-500">
-          These tasks were routed to your area by a Super Admin. Review each one and allocate it to your Cadres —
-          it's sent via WhatsApp only once you allocate it.
+          These tasks — whether created by you or routed here by a Super Admin — haven't been sent to any Cadres
+          yet. Review each one and allocate it to your Cadres; it's sent via WhatsApp only once you allocate it.
         </p>
       </div>
 

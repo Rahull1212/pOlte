@@ -233,6 +233,7 @@ export class UsersService {
       this.prisma.grievance.updateMany({ where: { resolvedById: targetId }, data: { resolvedById: newOwnerId } }),
       this.prisma.event.updateMany({ where: { createdById: targetId }, data: { createdById: newOwnerId } }),
       this.prisma.bulkMessageCampaign.updateMany({ where: { createdById: targetId }, data: { createdById: newOwnerId } }),
+      this.prisma.poll.updateMany({ where: { createdById: targetId }, data: { createdById: newOwnerId } }),
       // Direct reports — their manager pointer moves to the new owner too.
       this.prisma.user.updateMany({ where: { parentUserId: targetId }, data: { parentUserId: newOwnerId } }),
       // Active/pending Cadre work — reassigned AND explicitly flagged, so it

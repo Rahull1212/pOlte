@@ -13,6 +13,7 @@ import {
   useTaskInsights,
   useGenerateTaskInsights,
   useRetryWhatsapp,
+  useSendCompletionCheck,
   useAskAboutTask,
   TaskDashboardCadre,
   TaskTimelineEvent,
@@ -44,6 +45,12 @@ const whatsappTone: Record<string, "slate" | "green" | "red" | "blue"> = {
   DELIVERED: "green",
   READ: "green",
   FAILED: "red",
+};
+
+const completionTone: Record<string, "slate" | "green" | "red" | "amber"> = {
+  AWAITING: "amber",
+  YES: "green",
+  NO: "red",
 };
 
 const timelineLabel: Record<TaskTimelineEvent["type"], string> = {
@@ -101,6 +108,7 @@ export default function TaskDashboardPage() {
   const { data: insights } = useTaskInsights(id);
   const generateInsights = useGenerateTaskInsights(id);
   const retryWhatsapp = useRetryWhatsapp();
+  const sendCompletionCheck = useSendCompletionCheck();
   const askAi = useAskAboutTask(id);
 
   const [question, setQuestion] = useState("");
@@ -177,6 +185,21 @@ export default function TaskDashboardPage() {
             </CardContent>
           </Card>
 
+          {/* "Have you completed your task?" check-in results */}
+          {kpis.completionAsked > 0 && (
+            <Card>
+              <CardHeader>
+                <CardTitle>Task Completion Check-in</CardTitle>
+              </CardHeader>
+              <CardContent className="grid grid-cols-2 gap-3 sm:grid-cols-4">
+                <Kpi label="Asked" value={kpis.completionAsked} />
+                <Kpi label="Yes" value={kpis.completionYes} tone="text-emerald-600" />
+                <Kpi label="No" value={kpis.completionNo} tone={kpis.completionNo > 0 ? "text-red-600" : undefined} />
+                <Kpi label="Awaiting Reply" value={kpis.completionAwaiting} tone={kpis.completionAwaiting > 0 ? "text-amber-600" : undefined} />
+              </CardContent>
+            </Card>
+          )}
+
           {/* 4. Task Progress funnel */}
           <Card>
             <CardHeader>
@@ -236,7 +259,7 @@ export default function TaskDashboardPage() {
               <CardTitle>Cadre-wise Performance</CardTitle>
             </CardHeader>
             <CardContent className="overflow-x-auto p-0">
-              <table className="w-full min-w-[820px] text-sm">
+              <table className="w-full min-w-[960px] text-sm">
                 <thead className="border-b border-slate-100 text-left text-xs uppercase text-slate-500">
                   <tr>
                     <th className="px-5 py-2">Cadre</th>
@@ -244,6 +267,7 @@ export default function TaskDashboardPage() {
                     <th className="px-5 py-2">WhatsApp Status</th>
                     <th className="px-5 py-2">Response Status</th>
                     <th className="px-5 py-2">Task Status</th>
+                    <th className="px-5 py-2">Completed?</th>
                     <th className="px-5 py-2">Progress</th>
                     <th className="px-5 py-2">Last Activity</th>
                   </tr>
@@ -280,13 +304,30 @@ export default function TaskDashboardPage() {
                       <td className="px-5 py-2">
                         <Badge tone={statusTone[c.status] ?? "slate"}>{c.status}</Badge>
                       </td>
+                      <td className="px-5 py-2">
+                        {c.completionConfirmation ? (
+                          <Badge tone={completionTone[c.completionConfirmation]}>
+                            {c.completionConfirmation === "AWAITING" ? "Awaiting Reply" : c.completionConfirmation}
+                          </Badge>
+                        ) : c.status === "CANCELLED" ? (
+                          <span className="text-xs text-slate-400">—</span>
+                        ) : (
+                          <button
+                            onClick={() => sendCompletionCheck.mutate(c.taskId)}
+                            disabled={sendCompletionCheck.isPending}
+                            className="text-xs text-brand-600 hover:underline disabled:opacity-50"
+                          >
+                            {sendCompletionCheck.isPending ? "Sending…" : "Ask"}
+                          </button>
+                        )}
+                      </td>
                       <td className="px-5 py-2 text-slate-600">{c.progressPct}%</td>
                       <td className="px-5 py-2 text-slate-500">{c.lastActivityAt ? timeAgo(c.lastActivityAt) : "—"}</td>
                     </tr>
                   ))}
                   {cadres.length === 0 && (
                     <tr>
-                      <td colSpan={7} className="px-5 py-6 text-center text-slate-400">
+                      <td colSpan={8} className="px-5 py-6 text-center text-slate-400">
                         No cadres assigned.
                       </td>
                     </tr>

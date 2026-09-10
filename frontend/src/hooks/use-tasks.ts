@@ -89,6 +89,12 @@ export interface TaskDashboardCadre {
   progressPct: number;
   whatsappStatus: WhatsappDeliveryStatus;
   whatsappSentAt: string | null;
+  // null = never asked "have you completed your task?" (most tasks — this
+  // is an explicit Admin action, see useSendCompletionCheck), distinct from
+  // AWAITING (asked, no reply yet).
+  completionConfirmation: "AWAITING" | "YES" | "NO" | null;
+  completionCheckSentAt: string | null;
+  completionConfirmedAt: string | null;
   lastActivityAt: string | null;
 }
 
@@ -129,6 +135,12 @@ export interface TaskDashboard {
     whatsappRead: number;
     whatsappFailed: number;
     responded: number;
+    // Only among Cadres actually asked (completionAsked) — most tasks are
+    // never asked at all, and shouldn't dilute the Yes/No split.
+    completionAsked: number;
+    completionYes: number;
+    completionNo: number;
+    completionAwaiting: number;
   };
   cadres: TaskDashboardCadre[];
   dailyProgress: { date: string; updatesSubmitted: number; avgCompletionPct: number }[];
@@ -226,6 +238,19 @@ export function useTaskDetail(id: string) {
 
 // taskId is the Cadre's own Task row id (TaskDetail.assignedMembers[].taskId),
 // not the batch/task-detail id in the URL — same convention as retry-whatsapp.
+// taskId is the Cadre's own Task row id, same convention as retry-whatsapp
+// and remove-assignee. Requires FYXO_TEMPLATES.TASK_COMPLETION_CHECK to be
+// an approved Fyxo template — see TasksService.sendCompletionCheck.
+export function useSendCompletionCheck() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: (taskId: string) => api.post(`/tasks/${taskId}/completion-check`),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["tasks"] });
+    },
+  });
+}
+
 export function useRemoveTaskAssignee() {
   const queryClient = useQueryClient();
   return useMutation({

@@ -1,6 +1,6 @@
 "use client";
 
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import Link from "next/link";
 import { AppShell } from "@/components/app-shell";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -55,6 +55,16 @@ export default function TasksPage() {
   const [search, setSearch] = useState("");
   const [statusFilter, setStatusFilter] = useState<TaskSummaryStatus | "">("");
   const [priorityFilter, setPriorityFilter] = useState<TaskPriority | "">("");
+  const [createMenuOpen, setCreateMenuOpen] = useState(false);
+  const createMenuRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    const onClickOutside = (e: MouseEvent) => {
+      if (createMenuRef.current && !createMenuRef.current.contains(e.target as Node)) setCreateMenuOpen(false);
+    };
+    document.addEventListener("mousedown", onClickOutside);
+    return () => document.removeEventListener("mousedown", onClickOutside);
+  }, []);
 
   const filtered = useMemo(() => {
     return (tasks ?? []).filter((t) => {
@@ -81,9 +91,27 @@ export default function TasksPage() {
           <Link href="/tasks/analytics">
             <Button variant="secondary">📊 Communication & AI Insights</Button>
           </Link>
-          <Link href="/tasks/new">
-            <Button>+ Create Task</Button>
-          </Link>
+          <div className="relative" ref={createMenuRef}>
+            <Button onClick={() => setCreateMenuOpen((v) => !v)}>+ Create ▾</Button>
+            {createMenuOpen && (
+              <div className="absolute right-0 z-20 mt-1 w-44 rounded-lg border border-slate-200 bg-white py-1 shadow-lg">
+                <Link
+                  href="/tasks/new"
+                  onClick={() => setCreateMenuOpen(false)}
+                  className="block px-4 py-2 text-sm text-slate-700 hover:bg-slate-50"
+                >
+                  Create Task
+                </Link>
+                <Link
+                  href="/polls/new"
+                  onClick={() => setCreateMenuOpen(false)}
+                  className="block px-4 py-2 text-sm text-slate-700 hover:bg-slate-50"
+                >
+                  Create Poll
+                </Link>
+              </div>
+            )}
+          </div>
         </div>
       </div>
 

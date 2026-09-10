@@ -11,8 +11,14 @@ async function bootstrap() {
   // without having to bypass JSON parsing for every other route.
   const app = await NestFactory.create<NestExpressApplication>(AppModule, { cors: false, rawBody: true });
 
+  // Comma-separated so more than one front-end origin can be allowed at
+  // once — needed in local dev, where the Next server can end up on a
+  // different port than 3000 if something else on the machine has claimed it.
   app.enableCors({
-    origin: process.env.CORS_ORIGIN ?? "http://localhost:3000",
+    origin: (process.env.CORS_ORIGIN ?? "http://localhost:3000")
+      .split(",")
+      .map((o) => o.trim())
+      .filter(Boolean),
     credentials: true,
   });
 

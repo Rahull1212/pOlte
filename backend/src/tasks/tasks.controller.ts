@@ -185,6 +185,14 @@ export class TasksController {
     return this.tasksService.removeAssignee(id, user);
   }
 
+  // Same per-Cadre "id is one Task row" convention — sends the "Have you
+  // completed your task?" Yes/No check-in to that one Cadre.
+  @Post(":id/completion-check")
+  @Roles("SUPER_ADMIN", "ADMIN")
+  sendCompletionCheck(@Param("id") id: string, @CurrentUser() user: AuthenticatedUser) {
+    return this.tasksService.sendCompletionCheck(id, user);
+  }
+
   @Patch(":id")
   update(@Param("id") id: string, @Body(new ZodValidationPipe(updateTaskSchema)) dto: UpdateTaskDto) {
     return this.tasksService.update(id, dto);
