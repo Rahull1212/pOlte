@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useRef, useState } from "react";
+import { Suspense, useEffect, useMemo, useState } from "react";
 import Link from "next/link";
 import { AppShell } from "@/components/app-shell";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -9,6 +9,7 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { useCurrentUser } from "@/hooks/use-auth";
 import { useTaskList, usePendingAllocationTasks, TaskSummaryStatus } from "@/hooks/use-tasks";
+import { useSearchQuery } from "@/hooks/use-search-query";
 import { TaskPriority } from "@/lib/shared-types";
 
 const STATUS_OPTIONS: TaskSummaryStatus[] = [
@@ -48,23 +49,28 @@ const priorityTone: Record<TaskPriority, "slate" | "blue" | "amber" | "red"> = {
   URGENT: "red",
 };
 
+// useSearchQuery() reads useSearchParams(), which opts a page out of static
+// generation unless it sits inside a Suspense boundary — `next build` fails
+// without this wrapper.
 export default function TasksPage() {
+  return (
+    <Suspense fallback={null}>
+      <TasksPageContent />
+    </Suspense>
+  );
+}
+
+function TasksPageContent() {
   const { data: user } = useCurrentUser();
   const { data: tasks, isLoading } = useTaskList();
   const { data: pendingAllocation } = usePendingAllocationTasks(user?.role === "ADMIN");
-  const [search, setSearch] = useState("");
+  // Seeded from the header search box so the two controls filter the same
+  // list instead of fighting each other.
+  const headerQuery = useSearchQuery();
+  const [search, setSearch] = useState(headerQuery);
+  useEffect(() => setSearch(headerQuery), [headerQuery]);
   const [statusFilter, setStatusFilter] = useState<TaskSummaryStatus | "">("");
   const [priorityFilter, setPriorityFilter] = useState<TaskPriority | "">("");
-  const [createMenuOpen, setCreateMenuOpen] = useState(false);
-  const createMenuRef = useRef<HTMLDivElement>(null);
-
-  useEffect(() => {
-    const onClickOutside = (e: MouseEvent) => {
-      if (createMenuRef.current && !createMenuRef.current.contains(e.target as Node)) setCreateMenuOpen(false);
-    };
-    document.addEventListener("mousedown", onClickOutside);
-    return () => document.removeEventListener("mousedown", onClickOutside);
-  }, []);
 
   const filtered = useMemo(() => {
     return (tasks ?? []).filter((t) => {
@@ -91,27 +97,14 @@ export default function TasksPage() {
           <Link href="/tasks/analytics">
             <Button variant="secondary">📊 Communication & AI Insights</Button>
           </Link>
-          <div className="relative" ref={createMenuRef}>
-            <Button onClick={() => setCreateMenuOpen((v) => !v)}>+ Create ▾</Button>
-            {createMenuOpen && (
-              <div className="absolute right-0 z-20 mt-1 w-44 rounded-lg border border-slate-200 bg-white py-1 shadow-lg">
-                <Link
-                  href="/tasks/new"
-                  onClick={() => setCreateMenuOpen(false)}
-                  className="block px-4 py-2 text-sm text-slate-700 hover:bg-slate-50"
-                >
-                  Create Task
-                </Link>
-                <Link
-                  href="/polls/new"
-                  onClick={() => setCreateMenuOpen(false)}
-                  className="block px-4 py-2 text-sm text-slate-700 hover:bg-slate-50"
-                >
-                  Create Poll
-                </Link>
-              </div>
-            )}
-          </div>
+          {/* Straight to the form, no menu in between. The dropdown offered
+              Create Poll from the Tasks page — a second module reached from
+              the wrong one — and put a step between wanting a task and
+              getting the form. Polls have their own Create button on the
+              Polls page, so nothing is lost by dropping the menu. */}
+          <Link href="/tasks/new">
+            <Button>+ Create Task</Button>
+          </Link>
         </div>
       </div>
 

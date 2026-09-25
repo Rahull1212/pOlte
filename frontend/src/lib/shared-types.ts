@@ -11,11 +11,11 @@ import { z } from "zod";
 
 // Three-tier role model. "Area" (which Region a SUPER_ADMIN/ADMIN manages) is
 // carried on the user's regionId, not the role — an ADMIN's regionId can be
-// a District, Constituency, Mandal, or Booth node interchangeably.
+// a District, Constituency, or Polling Station node interchangeably.
 export const Role = ["SUPER_ADMIN", "ADMIN", "CADRE"] as const;
 export type Role = (typeof Role)[number];
 
-export const RegionType = ["STATE", "DISTRICT", "CONSTITUENCY", "MANDAL", "BOOTH"] as const;
+export const RegionType = ["STATE", "DISTRICT", "CONSTITUENCY", "BOOTH"] as const;
 export type RegionType = (typeof RegionType)[number];
 
 export const Gender = ["MALE", "FEMALE", "OTHER", "PREFER_NOT_TO_SAY"] as const;
@@ -23,6 +23,11 @@ export type Gender = (typeof Gender)[number];
 
 export const CampaignStatus = ["DRAFT", "UPCOMING", "ACTIVE", "COMPLETED", "CANCELLED"] as const;
 export type CampaignStatus = (typeof CampaignStatus)[number];
+
+// Where an Admin stands on a campaign they were handed. Assignment alone
+// isn't agreement — until they ACCEPT, they cannot allocate its work.
+export const CampaignAssignmentStatus = ["PENDING", "ACCEPTED", "DECLINED"] as const;
+export type CampaignAssignmentStatus = (typeof CampaignAssignmentStatus)[number];
 
 export const CampaignPriority = ["LOW", "MEDIUM", "HIGH", "CRITICAL"] as const;
 export type CampaignPriority = (typeof CampaignPriority)[number];
@@ -78,6 +83,58 @@ export type AIInsightType = (typeof AIInsightType)[number];
 
 export const GrievanceStatus = ["OPEN", "IN_PROGRESS", "RESOLVED", "REJECTED"] as const;
 export type GrievanceStatus = (typeof GrievanceStatus)[number];
+
+// ============================================================
+// REGIONS (areas)
+// ============================================================
+// The hierarchy itself (which type may sit under which) is enforced in
+// RegionsService, not here — it depends on the parent's stored type, which a
+// schema can't see. These only check the shape.
+
+export const createRegionSchema = z.object({
+  name: z.string().min(1, "Name is required").max(120),
+  type: z.enum(RegionType),
+  // Required for everything but a State; the service rejects the invalid
+  // combinations with a message naming the expected parent type.
+  parentId: z.string().min(1).optional(),
+  // Booths only. Free text because real booth numbers carry letters and
+  // leading zeros ("12A", "007").
+  number: z.string().max(20).optional(),
+});
+export type CreateRegionDto = z.infer<typeof createRegionSchema>;
+
+export const updateRegionSchema = z
+  .object({
+    name: z.string().min(1).max(120).optional(),
+    parentId: z.string().min(1).optional(),
+    type: z.enum(RegionType).optional(),
+    number: z.string().max(20).optional(),
+  })
+  .refine((d) => Object.values(d).some((v) => v !== undefined), {
+    message: "Nothing to update",
+  });
+export type UpdateRegionDto = z.infer<typeof updateRegionSchema>;
+
+// Campaign status transitions come in as a bare field; without this any
+// string was accepted straight into the database column.
+// An Admin's answer to a campaign assignment. A decline should say why —
+// the Super Admin otherwise only learns that someone said no.
+export const respondToCampaignSchema = z
+  .object({
+    status: z.enum(["ACCEPTED", "DECLINED"]),
+    note: z.string().max(500).optional(),
+  })
+  .refine((d) => d.status !== "DECLINED" || (d.note && d.note.trim().length > 0), {
+    message: "Give a reason for declining this campaign",
+    path: ["note"],
+  });
+export type RespondToCampaignDto = z.infer<typeof respondToCampaignSchema>;
+
+export const setCampaignStatusSchema = z.object({ status: z.enum(CampaignStatus) });
+export type SetCampaignStatusDto = z.infer<typeof setCampaignStatusSchema>;
+
+export const refreshTokenSchema = z.object({ refreshToken: z.string().min(1, "refreshToken is required") });
+export type RefreshTokenDto = z.infer<typeof refreshTokenSchema>;
 
 // ============================================================
 // AUTH
@@ -156,19 +213,51 @@ export type UpdateUserDto = z.infer<typeof updateUserSchema>;
 // CAMPAIGNS
 // ============================================================
 
+// What kind of work a campaign involves. Chosen from a list rather than
+// typed free-hand so campaigns group cleanly in filtering and reporting —
+// "Door-to-door", "door to door" and "D2D" were all the same thing before.
+//
+// Stored in the existing Campaign.category column as plain text, not an
+// enum: campaigns created before this list exists carry values that aren't
+// in it, and an enum would make those rows unreadable and un-editable.
+export const CampaignType = [
+  "Door-to-door Canvassing",
+  "Membership Drive",
+  "Voter Registration",
+  "Phone Banking / Calling",
+  "Survey / Feedback Collection",
+  "Event / Rally Coordination",
+  "Social Media Push",
+  "Booth-level Mobilization",
+] as const;
+export type CampaignType = (typeof CampaignType)[number];
+
 const campaignBaseSchema = z.object({
   name: z.string().min(3).max(150),
   description: z.string().min(1),
   objective: z.string().optional(),
+  // The Campaign Type (see CampaignType). Kept as a free string so legacy
+  // values still validate; the UI offers the list.
   category: z.string().optional(),
   startDate: z.coerce.date(),
   endDate: z.coerce.date(),
   priority: z.enum(CampaignPriority).default("MEDIUM"),
   bannerUrl: z.string().url().optional(),
-  totalTarget: z.number().int().positive(),
-  totalBudget: z.number().positive(),
+  // Optional: a campaign is created without them, and the real numbers are
+  // allocated per area on the Targets/Budget screens. Still positive when
+  // given — a target of zero is a typo, not a plan.
+  totalTarget: z.number().int().positive().optional(),
+  totalBudget: z.number().positive().optional(),
   expectedVolunteers: z.number().int().nonnegative().optional(),
   requiredDocuments: z.array(z.string()).default([]),
+  // The areas this campaign runs in. Every Admin covering one of them is
+  // assigned it, and each then accepts or declines — so the Super Admin
+  // chooses WHERE the campaign applies rather than having to know which
+  // Admin happens to hold which patch today.
+  regionIds: z.array(z.string().min(1)).default([]),
+  // Specific Admins, still accepted for callers that name people directly
+  // (and for edits). Merged with whoever the areas resolve to.
+  adminIds: z.array(z.string().min(1)).default([]),
 });
 
 export const createCampaignSchema = campaignBaseSchema.refine(
@@ -223,6 +312,10 @@ export type ApproveBudgetDto = z.infer<typeof approveBudgetSchema>;
 export const createTaskSchema = z.object({
   campaignId: z.string().min(1).optional(),
   allocationId: z.string().optional(),
+  // The official ECI location: a Polling Station id. Its ancestry supplies
+  // the Assembly Constituency, District and State, so those are never sent
+  // separately — they could only disagree with each other if they were.
+  pollingStationId: z.string().min(1).optional(),
   name: z.string().min(2).max(150),
   description: z.string().optional(),
   assignedToId: z.string().min(1),
@@ -248,11 +341,11 @@ export const createTaskBatchSchema = z.object({
   name: z.string().min(2).max(150),
   objective: z.string().optional(),
   description: z.string().optional(),
-  additionalDetails: z.string().optional(),
   remarks: z.string().optional(),
   deadline: z.coerce.date(),
   priority: z.enum(TaskPriority).default("MEDIUM"),
   campaignId: z.string().optional(),
+  pollingStationId: z.string().min(1).optional(),
   regionIds: z.array(z.string().min(1)).min(1, "Select at least one area"),
   attachmentUrls: z.array(z.string().url()).default([]),
 });
@@ -286,7 +379,16 @@ export type AllocateTaskDto = z.infer<typeof allocateTaskSchema>;
 // can carry — see FYXO_TEMPLATES.POLL's doc comment.
 export const createPollSchema = z.object({
   question: z.string().min(3).max(300),
-  options: z.array(z.string().min(1).max(60)).min(2, "Add at least 2 options").max(3, "A poll can have at most 3 options"),
+  /**
+   * The approved WhatsApp template to ask with. Its Quick Reply buttons ARE
+   * the answers — Meta fixes button labels at approval time, so options
+   * cannot be typed per poll; you pick a template that already offers the
+   * ones you want ("Yes / No", "In Progress / Completed / Need Help").
+   */
+  templateName: z.string().min(1, "Choose a template"),
+  templateLanguage: z.string().min(2).max(10).optional(),
+  /** Hang this poll off a task, or leave unset for a standalone poll. */
+  taskId: z.string().min(1).optional(),
   regionIds: z.array(z.string().min(1)).min(1, "Select at least one area"),
   deadline: z.coerce.date().optional(),
 });
@@ -303,48 +405,6 @@ export const allocatePollSchema = z
   });
 export type AllocatePollDto = z.infer<typeof allocatePollSchema>;
 
-// ============================================================
-// GOOGLE SHEET (task message log)
-// ============================================================
-// A Super Admin connects the sheet from the app itself, so the URL is
-// whatever they pasted out of the browser — GoogleSheetsService.connect
-// extracts the spreadsheet id from it (or accepts a bare id), which is why
-// this only checks it's non-empty rather than trying to match a URL shape
-// here and rejecting a link Google would have accepted.
-export const connectSheetSchema = z.object({
-  spreadsheetUrl: z.string().min(1, "Paste the Google Sheet link"),
-  // Defaults to "Task Messages" server-side; the tab is created if the
-  // spreadsheet doesn't have one by that name yet.
-  tabName: z.string().max(100).optional(),
-});
-export type ConnectSheetDto = z.infer<typeof connectSheetSchema>;
-
-// The service-account key file, pasted whole. Only checked for "is there
-// something here" — the real validation (is it JSON, is it a service
-// account, is the key intact) happens in GoogleSheetsService.saveServiceAccount,
-// which can give a specific, fixable message per failure instead of one
-// generic schema error.
-export const saveGoogleCredentialsSchema = z.object({
-  serviceAccountJson: z.string().min(1, "Paste the contents of the JSON key file"),
-});
-export type SaveGoogleCredentialsDto = z.infer<typeof saveGoogleCredentialsSchema>;
-
-// The one-time OAuth app registration from Google Cloud. An application
-// identity, not a user's credentials — set once per install, then the Super
-// Admin only ever clicks "Connect Google Sheets".
-export const saveGoogleOAuthAppSchema = z.object({
-  clientId: z.string().min(1, "Paste the OAuth Client ID"),
-  clientSecret: z.string().min(1, "Paste the OAuth Client secret"),
-});
-export type SaveGoogleOAuthAppDto = z.infer<typeof saveGoogleOAuthAppSchema>;
-
-// Picking a sheet from the signed-in account's own Drive — an id straight
-// from the picker list, so unlike connectSheetSchema there's no URL to parse.
-export const selectSpreadsheetSchema = z.object({
-  spreadsheetId: z.string().min(1),
-  tabName: z.string().max(100).optional(),
-});
-export type SelectSpreadsheetDto = z.infer<typeof selectSpreadsheetSchema>;
 
 // ============================================================
 // PER-ADMIN WHATSAPP TEMPLATE
@@ -354,6 +414,51 @@ export type SelectSpreadsheetDto = z.infer<typeof selectSpreadsheetSchema>;
 // the same template. PoliOS cannot create or approve templates — this only
 // points at a name that already exists in Fyxo/Meta, so a typo here surfaces
 // as a failed send, not a validation error.
+// What a {{n}} placeholder in a template is filled with. Deliberately a small
+// closed set: every value must be single-line (a line break makes Meta reject
+// the whole send, API.md §5) and available at send time without extra lookups.
+export const TemplateVariableSource = [
+  "CADRE_NAME",
+  // The campaign a task belongs to. Added for the task_assigned_v2
+  // template, whose {{2}} is the campaign name; a task filed against no
+  // campaign renders an em dash rather than failing the send.
+  "CAMPAIGN_NAME",
+  "TASK_NAME",
+  "DEADLINE",
+  "PRIORITY",
+  "ASSIGNED_BY",
+] as const;
+export type TemplateVariableSource = (typeof TemplateVariableSource)[number];
+
+// What tapping a Quick Reply sends back. The first two are the built-in
+// behaviours PoliOS already knew how to produce; CUSTOM_TEXT lets a Super
+// Admin write their own wording, and NONE stays silent for a button whose
+// answer is handled by the Fyxo flow itself.
+export const ButtonReplyAction = ["TASK_DETAILS", "ADMIN_CONTACT", "CUSTOM_TEXT", "NONE"] as const;
+export type ButtonReplyAction = (typeof ButtonReplyAction)[number];
+
+export const templateButtonReplySchema = z
+  .object({
+    // The button's approved label, exactly as Meta has it — this is what
+    // arrives on a tap, so it is the key the reply is looked up by.
+    label: z.string().min(1).max(120),
+    action: z.enum(ButtonReplyAction),
+    /**
+     * Extra wording to send with this button, added by hand.
+     *
+     * Valid alongside ANY action, not just CUSTOM_TEXT: it is appended to
+     * whatever the action produces, so "send the task details AND tell them
+     * to bring the register" is one button rather than a choice between
+     * the two. With action NONE it becomes the whole reply.
+     */
+    text: z.string().max(1000).optional(),
+  })
+  .refine((b) => b.action !== "CUSTOM_TEXT" || (b.text && b.text.trim().length > 0), {
+    message: "Write the message this button should send",
+    path: ["text"],
+  });
+export type TemplateButtonReplyDto = z.infer<typeof templateButtonReplySchema>;
+
 export const assignMessageTemplateSchema = z.object({
   // Meta's own naming rule for approved templates: lowercase letters,
   // digits and underscores only. Checked here so an obviously-wrong name
@@ -368,6 +473,12 @@ export const assignMessageTemplateSchema = z.object({
   // it's only used to render what the Cadre reads into the Google Sheet log
   // and the preview on screen.
   templateBody: z.string().max(1000).optional(),
+  // One entry per {{n}} the template declares, in order. Omitted or empty
+  // keeps the default who/what/when order.
+  templateVariables: z.array(z.enum(TemplateVariableSource)).max(10).optional(),
+  // One entry per Quick Reply the template declares. Omitted keeps the
+  // built-in behaviour for every button.
+  templateButtons: z.array(templateButtonReplySchema).max(10).optional(),
 });
 export type AssignMessageTemplateDto = z.infer<typeof assignMessageTemplateSchema>;
 
@@ -378,7 +489,7 @@ export const taskAnalyticsFiltersSchema = z.object({
   dateFrom: z.string().optional(),
   dateTo: z.string().optional(),
   districtId: z.string().optional(),
-  mandalId: z.string().optional(),
+  constituencyId: z.string().optional(),
   status: z.string().optional(),
   priority: z.string().optional(),
   taskType: z.enum(["BULK", "INDIVIDUAL"]).optional(),
@@ -454,7 +565,6 @@ export const bulkRecipientSelectionSchema = z.object({
     .object({
       district: z.string().optional(),
       constituency: z.string().optional(),
-      mandal: z.string().optional(),
       booth: z.string().optional(),
     })
     .optional(),
@@ -484,12 +594,27 @@ export type RegisterCitizenDto = z.infer<typeof registerCitizenSchema>;
 // GRIEVANCES
 // ============================================================
 
+// The categories offered in the UI. Kept identical to GRIEVANCE_CATEGORIES in
+// whatsapp-conversation.service.ts so a grievance filed on the web and one
+// filed over WhatsApp are filed under the same names and group together in
+// reporting. Not an enum on the model: existing rows carry free text.
+export const GrievanceCategory = [
+  "Water Supply",
+  "Roads",
+  "Electricity",
+  "Sanitation",
+  "Other",
+] as const;
+export type GrievanceCategory = (typeof GrievanceCategory)[number];
+
 export const submitGrievanceSchema = z.object({
   regionId: z.string().min(1),
   citizenId: z.string().min(1).optional(),
   category: z.string().min(1),
   description: z.string().min(1),
-  photos: z.array(z.string().url()).default([]),
+  // URLs returned by POST /grievances/attachments. Validated as URLs so a
+  // caller can't smuggle a filesystem path in here.
+  attachmentUrls: z.array(z.string().url()).default([]),
 });
 export type SubmitGrievanceDto = z.infer<typeof submitGrievanceSchema>;
 
@@ -502,6 +627,15 @@ export const rejectGrievanceSchema = z.object({
   resolutionNotes: z.string().min(1),
 });
 export type RejectGrievanceDto = z.infer<typeof rejectGrievanceSchema>;
+
+// Moving a grievance along the workflow. RESOLVED/REJECTED are terminal and
+// require a note explaining the decision, which is why they also have their
+// own endpoints; this one exists for the OPEN -> IN_PROGRESS review step.
+export const updateGrievanceStatusSchema = z.object({
+  status: z.enum(GrievanceStatus),
+  resolutionNotes: z.string().min(1).optional(),
+});
+export type UpdateGrievanceStatusDto = z.infer<typeof updateGrievanceStatusSchema>;
 
 // ============================================================
 // EVENTS

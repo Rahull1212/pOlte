@@ -138,6 +138,32 @@ export function PollIcon(props: SVGProps<SVGSVGElement>) {
   );
 }
 
+export function EyeIcon(props: SVGProps<SVGSVGElement>) {
+  return (
+    <svg {...base(props)}>
+      <path
+        strokeLinecap="round"
+        strokeLinejoin="round"
+        d="M2.25 12s3.75-6.75 9.75-6.75S21.75 12 21.75 12s-3.75 6.75-9.75 6.75S2.25 12 2.25 12z"
+      />
+      <path strokeLinecap="round" strokeLinejoin="round" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" />
+    </svg>
+  );
+}
+
+// The struck-through eye — password currently visible, click to hide.
+export function EyeOffIcon(props: SVGProps<SVGSVGElement>) {
+  return (
+    <svg {...base(props)}>
+      <path
+        strokeLinecap="round"
+        strokeLinejoin="round"
+        d="M3.98 8.22A10.5 10.5 0 002.25 12s3.75 6.75 9.75 6.75c1.53 0 2.91-.44 4.11-1.11M6.53 6.53A9.7 9.7 0 0112 5.25c6 0 9.75 6.75 9.75 6.75a17 17 0 01-2.6 3.4M6.53 6.53l10.94 10.94M6.53 6.53L3 3m14.47 14.47L21 21M9.88 9.88a3 3 0 104.24 4.24"
+      />
+    </svg>
+  );
+}
+
 // A grid/table outline — the task-message log sheet.
 export function SheetIcon(props: SVGProps<SVGSVGElement>) {
   return (

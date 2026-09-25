@@ -12,8 +12,10 @@ export class NotificationsController {
     return this.notificationsService.findForUser(user.id);
   }
 
+  // Own notifications only — the id alone used to be enough to mark
+  // anyone's as read.
   @Patch(":id/read")
-  markRead(@Param("id") id: string) {
-    return this.notificationsService.markRead(id);
+  markRead(@Param("id") id: string, @CurrentUser() user: AuthenticatedUser) {
+    return this.notificationsService.markRead(id, user.id);
   }
 }

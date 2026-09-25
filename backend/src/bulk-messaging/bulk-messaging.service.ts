@@ -5,7 +5,7 @@ import { PrismaService } from "../prisma/prisma.service";
 import { AuthenticatedUser } from "../auth/types";
 import { FyxoConnectService } from "../fyxo-connect/fyxo-connect.service";
 
-const HEADER_ALIASES: Record<string, "phone" | "name" | "district" | "constituency" | "mandal" | "booth"> = {
+const HEADER_ALIASES: Record<string, "phone" | "name" | "district" | "constituency" | "booth"> = {
   phonenumber: "phone",
   phone: "phone",
   mobile: "phone",
@@ -17,8 +17,10 @@ const HEADER_ALIASES: Record<string, "phone" | "name" | "district" | "constituen
   fullname: "name",
   district: "district",
   constituency: "constituency",
-  mandal: "mandal",
+  assemblyconstituency: "constituency",
+  ac: "constituency",
   booth: "booth",
+  pollingstation: "booth",
   villagebooth: "booth",
   village: "booth",
 };
@@ -52,7 +54,6 @@ interface ParsedRow {
   isDuplicate: boolean;
   districtName: string | null;
   constituencyName: string | null;
-  mandalName: string | null;
   boothName: string | null;
 }
 
@@ -113,7 +114,6 @@ export class BulkMessagingService {
         isDuplicate: false,
         districtName: mapped.district || null,
         constituencyName: mapped.constituency || null,
-        mandalName: mapped.mandal || null,
         boothName: mapped.booth || null,
       });
     }
@@ -139,7 +139,7 @@ export class BulkMessagingService {
   }
 
   /**
-   * Best-effort match of each row's District/Constituency/Mandal/Booth text
+   * Best-effort match of each row's District/Constituency/Polling Station text
    * against the real Region table — most specific first. A row that
    * doesn't match anything still keeps its raw text (used for filtering)
    * and just has no regionId; this is expected for external contact lists
@@ -155,10 +155,6 @@ export class BulkMessagingService {
     return rows.map((row) => {
       if (row.boothName) {
         const id = byTypeAndName.get(`BOOTH:${row.boothName.toLowerCase()}`);
-        if (id) return id;
-      }
-      if (row.mandalName) {
-        const id = byTypeAndName.get(`MANDAL:${row.mandalName.toLowerCase()}`);
         if (id) return id;
       }
       if (row.constituencyName) {
@@ -200,7 +196,6 @@ export class BulkMessagingService {
         rawPhone: row.rawPhone,
         districtName: row.districtName,
         constituencyName: row.constituencyName,
-        mandalName: row.mandalName,
         boothName: row.boothName,
         regionId: regionIds[i],
         isValidPhone: row.isValidPhone,
@@ -248,12 +243,12 @@ export class BulkMessagingService {
     });
   }
 
-  /** Distinct District/Constituency/Mandal/Booth combinations among this campaign's recipients, for the cascading filter UI. */
+  /** Distinct District/Constituency/Polling Station combinations among this campaign's recipients, for the cascading filter UI. */
   async getFilterOptions(campaignId: string) {
     const rows = await this.prisma.bulkRecipient.findMany({
       where: { campaignId, isValidPhone: true, isDuplicate: false },
-      select: { districtName: true, constituencyName: true, mandalName: true, boothName: true },
-      distinct: ["districtName", "constituencyName", "mandalName", "boothName"],
+      select: { districtName: true, constituencyName: true, boothName: true },
+      distinct: ["districtName", "constituencyName", "boothName"],
     });
     return rows;
   }
@@ -274,7 +269,6 @@ export class BulkMessagingService {
     } else if (dto.filter) {
       if (dto.filter.district) where.districtName = dto.filter.district;
       if (dto.filter.constituency) where.constituencyName = dto.filter.constituency;
-      if (dto.filter.mandal) where.mandalName = dto.filter.mandal;
       if (dto.filter.booth) where.boothName = dto.filter.booth;
     }
 

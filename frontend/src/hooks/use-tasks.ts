@@ -2,13 +2,13 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { CreateTaskBatchDto, CreateTaskDto, ProgressUpdateDto, WhatsappDeliveryStatus } from "@/lib/shared-types";
 import { api } from "@/lib/api-client";
 import { getToken } from "@/lib/auth";
+import type { CommunicationStats } from "./use-analytics";
 
 export interface Task {
   id: string;
   name: string;
   objective?: string;
   description?: string;
-  additionalDetails?: string;
   status: "PENDING" | "IN_PROGRESS" | "COMPLETED" | "OVERDUE" | "CANCELLED";
   priority: "LOW" | "MEDIUM" | "HIGH" | "URGENT";
   acknowledgment?: "AWAITING" | "ACCEPTED" | "DECLINED";
@@ -53,11 +53,23 @@ export interface TaskDetail {
   name: string;
   objective?: string | null;
   description?: string | null;
-  additionalDetails?: string | null;
   remarks?: string | null;
   districts: string[];
-  mandals: string[];
+  constituencies: string[];
   booths: string[];
+  /**
+   * The official Election Commission location, derived from the task's
+   * Polling Station. Null when none was recorded — the four fields are
+   * only meaningful together, so they arrive together or not at all.
+   */
+  officialLocation: {
+    state: string | null;
+    district: string | null;
+    assemblyConstituency: string | null;
+    assemblyConstituencyNo: string | null;
+    pollingStationNo: string | null;
+    pollingStationName: string;
+  } | null;
   assignedMembers: {
     id: string;
     // The Cadre's own Task row id — target this with useRemoveTaskAssignee(),
@@ -73,6 +85,22 @@ export interface TaskDetail {
   priority: Task["priority"];
   attachmentUrls: string[];
   createdByName: string;
+  // The WhatsApp template this task will actually go out with, resolved the
+  // same way the send resolves it — shown on the allocate screen so an Admin
+  // knows what the Cadre will receive before pressing send. Absent on the
+  // legacy single-task shape.
+  outgoingTemplate?: {
+    name: string;
+    language: string;
+    body: string | null;
+    // body with {{1}} filled in, so it reads as the Cadre will read it.
+    preview: string | null;
+    // True when nobody has been assigned a template and the shared default
+    // is being used.
+    isDefault: boolean;
+    // Whose template it is — the task's creator.
+    ownerName: string;
+  };
   createdAt: string;
   currentStatus: TaskSummaryStatus;
 }
@@ -81,7 +109,7 @@ export interface TaskDashboardCadre {
   taskId: string;
   name: string;
   area: string;
-  mandal: string | null;
+  constituency: string | null;
   status: Task["status"];
   acknowledgment: Task["acknowledgment"];
   acknowledgedAt: string | null;
@@ -115,6 +143,9 @@ export interface TaskDashboard {
   isBatch: boolean;
   name: string;
   remarks?: string | null;
+  // Routed to Admins but not yet handed to any Cadre: there are no Task rows
+  // behind it, so every KPI is legitimately zero.
+  awaitingAllocation?: boolean;
   kpis: {
     totalAssigned: number;
     // Cadres removed from this task (see useRemoveTaskAssignee) — already
@@ -145,6 +176,11 @@ export interface TaskDashboard {
   cadres: TaskDashboardCadre[];
   dailyProgress: { date: string; updatesSubmitted: number; avgCompletionPct: number }[];
   progressFunnel: TaskProgressFunnelStage[];
+  // Message-level delivery from the Message Log. The kpis.whatsapp* fields
+  // above count PEOPLE (newest message per Cadre wins); this counts the
+  // MESSAGES it took to reach them, so the two differ once anything is
+  // retried. Both come from the same log rows.
+  communication: CommunicationStats;
   timeline: TaskTimelineEvent[];
 }
 
@@ -310,6 +346,22 @@ export function useAllocateTask(id: string) {
   const queryClient = useQueryClient();
   return useMutation({
     mutationFn: (input: { regionIds: string[]; cadreIds: string[] }) =>
+      api.post<AllocationResult>(`/tasks/${id}/allocate`, input),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["tasks"] });
+    },
+  });
+}
+
+/**
+ * Allocate a batch whose id isn't known until the mutation runs — used by
+ * the create screen's "assign directly to Cadres" path, which creates the
+ * batch and allocates it in one submit.
+ */
+export function useAllocateNewTask() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: ({ id, ...input }: { id: string; regionIds: string[]; cadreIds: string[] }) =>
       api.post<AllocationResult>(`/tasks/${id}/allocate`, input),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["tasks"] });

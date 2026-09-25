@@ -7,6 +7,7 @@ import { useRouter } from "next/navigation";
 import { AppShell } from "@/components/app-shell";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input, Label } from "@/components/ui/input";
+import { PasswordInput } from "@/components/ui/password-input";
 import { Button } from "@/components/ui/button";
 import { useCurrentUser, ROLE_LABELS } from "@/hooks/use-auth";
 import { useUpdateProfile, useChangePassword, useUploadProfilePicture } from "@/hooks/use-profile";
@@ -183,9 +184,8 @@ export default function ProfilePage() {
               <form onSubmit={onChangePassword} className="space-y-3">
                 <div>
                   <Label htmlFor="currentPassword">Current password</Label>
-                  <Input
+                  <PasswordInput
                     id="currentPassword"
-                    type="password"
                     required
                     value={passwordForm.currentPassword}
                     onChange={(e) => setPasswordForm({ ...passwordForm, currentPassword: e.target.value })}
@@ -193,9 +193,8 @@ export default function ProfilePage() {
                 </div>
                 <div>
                   <Label htmlFor="newPassword">New password</Label>
-                  <Input
+                  <PasswordInput
                     id="newPassword"
-                    type="password"
                     required
                     minLength={6}
                     value={passwordForm.newPassword}
@@ -204,9 +203,8 @@ export default function ProfilePage() {
                 </div>
                 <div>
                   <Label htmlFor="confirmPassword">Confirm new password</Label>
-                  <Input
+                  <PasswordInput
                     id="confirmPassword"
-                    type="password"
                     required
                     minLength={6}
                     value={passwordForm.confirmPassword}

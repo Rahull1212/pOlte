@@ -1,5 +1,6 @@
 "use client";
 
+import { Suspense, useMemo } from "react";
 import Link from "next/link";
 import { AppShell } from "@/components/app-shell";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -7,10 +8,26 @@ import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { useCurrentUser } from "@/hooks/use-auth";
 import { usePollList } from "@/hooks/use-polls";
+import { useSearchQuery, matchesQuery } from "@/hooks/use-search-query";
 
+// useSearchQuery() reads useSearchParams(), which needs a Suspense boundary
+// or `next build` refuses to prerender the page.
 export default function PollsPage() {
+  return (
+    <Suspense fallback={null}>
+      <PollsPageContent />
+    </Suspense>
+  );
+}
+
+function PollsPageContent() {
   const { data: user } = useCurrentUser();
   const { data: polls, isLoading } = usePollList();
+  const query = useSearchQuery();
+  const visiblePolls = useMemo(
+    () => (polls ?? []).filter((p) => matchesQuery(query, p.question, p.createdByName)),
+    [polls, query],
+  );
 
   if (user && user.role !== "SUPER_ADMIN" && user.role !== "ADMIN") {
     return (
@@ -23,16 +40,24 @@ export default function PollsPage() {
   return (
     <AppShell>
       <div className="mb-6 flex items-center justify-between">
-        <h1 className="text-lg font-semibold text-slate-900">Polls</h1>
-        <Link href="/polls/new">
-          <Button>+ Create Poll</Button>
-        </Link>
+        <h1 className="text-lg font-semibold text-slate-900">
+          Polls
+          {query && <span className="font-normal text-slate-400"> — search: &quot;{query}&quot;</span>}
+        </h1>
+        {/* Both roles write polls. A Super Admin can target any area; an
+            Admin's poll reaches only their own Cadres, which the API enforces
+            per region rather than trusting this button to be hidden. */}
+        {(user?.role === "SUPER_ADMIN" || user?.role === "ADMIN") && (
+          <Link href="/polls/new">
+            <Button>+ Create Poll</Button>
+          </Link>
+        )}
       </div>
 
       <Card>
         <CardHeader>
           <CardTitle>
-            All Polls <span className="font-normal text-slate-400">({polls?.length ?? 0})</span>
+            All Polls <span className="font-normal text-slate-400">({visiblePolls.length})</span>
           </CardTitle>
         </CardHeader>
         <CardContent className="p-0">
@@ -49,7 +74,7 @@ export default function PollsPage() {
               </tr>
             </thead>
             <tbody>
-              {polls?.map((p) => (
+              {visiblePolls.map((p) => (
                 <tr key={p.id} className="border-b border-slate-50">
                   <td className="px-5 py-2 font-medium text-slate-800">{p.question}</td>
                   <td className="px-5 py-2 text-slate-600">{p.options.join(", ")}</td>
@@ -70,10 +95,10 @@ export default function PollsPage() {
                   </td>
                 </tr>
               ))}
-              {!isLoading && polls?.length === 0 && (
+              {!isLoading && visiblePolls.length === 0 && (
                 <tr>
                   <td colSpan={7} className="px-5 py-8 text-center text-slate-500">
-                    No polls created yet.
+                    {query ? `No polls match "${query}".` : "No polls created yet."}
                   </td>
                 </tr>
               )}

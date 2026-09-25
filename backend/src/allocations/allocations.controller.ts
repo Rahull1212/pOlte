@@ -30,6 +30,7 @@ export class AllocationsController {
   }
 
   @Get("campaigns/:campaignId/allocations/tree")
+  @Roles("SUPER_ADMIN", "ADMIN")
   tree(@Param("campaignId") campaignId: string) {
     return this.allocationsService.tree(campaignId);
   }

@@ -6,6 +6,7 @@ import { usePathname, useRouter } from "next/navigation";
 import { useQueryClient } from "@tanstack/react-query";
 import { clearToken } from "@/lib/auth";
 import { useCurrentUser, ROLE_LABELS } from "@/hooks/use-auth";
+import { searchTargetFor } from "@/lib/search-targets";
 import { NotificationsBell } from "./notifications-bell";
 import {
   HomeIcon,
@@ -80,26 +81,43 @@ export function AppShell({ children, fullBleed = false }: AppShellProps) {
     ...(user?.role === "SUPER_ADMIN"
       ? [{ href: "/bulk-messages", label: "Bulk Messages", icon: ChatBubbleIcon }]
       : []),
+    // Admins see their own sends here, Super Admins see everyone's — the
+    // scoping is applied server-side.
+    ...(user?.role === "SUPER_ADMIN" || user?.role === "ADMIN"
+      ? [{ href: "/message-log", label: "Message Log", icon: SheetIcon }]
+      : []),
     ...(user?.role === "SUPER_ADMIN" || user?.role === "ADMIN"
       ? [{ href: "/fyxo-connect", label: "Fyxo Connect", icon: PlugIcon }]
       : []),
-    // Super Admin only: which template each Admin owns, and which sheet the
-    // whole campaign's message log goes to, are app-wide settings — not
-    // something each Admin repoints for themselves.
+    // Super Admin only — deliberately. An Admin CAN change their own
+    // template, but they do it on the task-create form, where the choice
+    // actually matters; a whole module of their own would be one page
+    // holding a single dropdown.
     ...(user?.role === "SUPER_ADMIN"
-      ? [
-          { href: "/message-templates", label: "WhatsApp Templates", icon: ChatBubbleIcon },
-          { href: "/google-sheet", label: "Google Sheet", icon: SheetIcon },
-        ]
+      ? [{ href: "/message-templates", label: "WhatsApp Templates", icon: ChatBubbleIcon }]
       : []),
   ];
 
   const isActive = (href: string) => pathname === href || (href !== "/dashboard" && pathname?.startsWith(href));
 
+  // The search box belongs to whichever section you're in — it used to be
+  // wired to campaigns everywhere, so on Tasks it offered to search
+  // campaigns and then navigated away from the page you were on.
+  const searchTarget = searchTargetFor(pathname);
+
   const onSearch = (e: React.FormEvent) => {
     e.preventDefault();
-    if (search.trim()) router.push(`/campaigns?q=${encodeURIComponent(search.trim())}`);
+    if (!searchTarget) return;
+    const query = search.trim();
+    router.push(query ? `${searchTarget.route}?q=${encodeURIComponent(query)}` : searchTarget.route);
   };
+
+  // Moving between sections clears whatever was typed for the previous one:
+  // a leftover "Road Repair" sitting in the box on the Campaigns tab reads
+  // as an applied filter that isn't actually applied.
+  useEffect(() => {
+    setSearch("");
+  }, [searchTarget?.route]);
 
   const logout = () => {
     clearToken();
@@ -164,17 +182,24 @@ export function AppShell({ children, fullBleed = false }: AppShellProps) {
       */}
       <div className="flex min-h-0 min-w-0 flex-1 flex-col">
         <header className="sticky top-0 z-10 flex items-center justify-between gap-4 border-b border-slate-200 bg-white px-6 py-3">
-          <form onSubmit={onSearch} className="max-w-sm flex-1">
-            <div className="flex items-center gap-2 rounded-lg border border-slate-200 bg-slate-50 px-3 py-1.5">
-              <SearchIcon className="h-4 w-4 text-slate-400" />
-              <input
-                value={search}
-                onChange={(e) => setSearch(e.target.value)}
-                placeholder="Search campaigns..."
-                className="w-full bg-transparent text-sm outline-none placeholder:text-slate-400"
-              />
-            </div>
-          </form>
+          {searchTarget ? (
+            <form onSubmit={onSearch} className="max-w-sm flex-1">
+              <div className="flex items-center gap-2 rounded-lg border border-slate-200 bg-slate-50 px-3 py-1.5">
+                <SearchIcon className="h-4 w-4 text-slate-400" />
+                <input
+                  value={search}
+                  onChange={(e) => setSearch(e.target.value)}
+                  placeholder={`Search ${searchTarget.noun}...`}
+                  aria-label={`Search ${searchTarget.noun}`}
+                  className="w-full bg-transparent text-sm outline-none placeholder:text-slate-400"
+                />
+              </div>
+            </form>
+          ) : (
+            // Keeps the notifications bell and profile menu where they are
+            // on every other page, instead of sliding them left.
+            <div className="flex-1" />
+          )}
 
           <div className="flex items-center gap-2">
             <NotificationsBell />

@@ -114,19 +114,48 @@ export default function TaskDetailPage() {
             <CardContent className="space-y-4">
               <Field label="Objective" value={task.objective} />
               <Field label="Description / Instructions" value={task.description} />
-              <Field label="Additional Details" value={task.additionalDetails} />
               <Field label="Comments / Remarks" value={task.remarks} />
             </CardContent>
           </Card>
 
           <Card>
             <CardHeader>
-              <CardTitle>Location</CardTitle>
+              <CardTitle>Official Location</CardTitle>
+            </CardHeader>
+            <CardContent>
+              {task.officialLocation ? (
+                <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
+                  <Field label="State" value={task.officialLocation.state} />
+                  <Field label="District" value={task.officialLocation.district} />
+                  <Field
+                    label="Assembly Constituency"
+                    value={
+                      task.officialLocation.assemblyConstituencyNo
+                        ? `${task.officialLocation.assemblyConstituencyNo} — ${task.officialLocation.assemblyConstituency ?? ""}`
+                        : task.officialLocation.assemblyConstituency
+                    }
+                  />
+                  <Field label="Polling Station No." value={task.officialLocation.pollingStationNo} />
+                  <div className="sm:col-span-2">
+                    <Field label="Polling Station Name" value={task.officialLocation.pollingStationName} />
+                  </div>
+                </div>
+              ) : (
+                <p className="text-sm text-slate-500">
+                  No official Polling Station was recorded for this task.
+                </p>
+              )}
+            </CardContent>
+          </Card>
+
+          <Card>
+            <CardHeader>
+              <CardTitle>Target Areas</CardTitle>
             </CardHeader>
             <CardContent className="grid grid-cols-1 gap-4 sm:grid-cols-3">
               <Field label="District" value={task.districts.join(", ")} />
-              <Field label="Mandal" value={task.mandals.join(", ")} />
-              <Field label="Village / Booth" value={task.booths.join(", ")} />
+              <Field label="Assembly Constituency" value={task.constituencies.join(", ")} />
+              <Field label="Polling Station" value={task.booths.join(", ")} />
             </CardContent>
           </Card>
 

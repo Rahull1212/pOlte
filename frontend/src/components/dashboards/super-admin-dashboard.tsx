@@ -3,6 +3,7 @@
 import Link from "next/link";
 import { Bar, BarChart, CartesianGrid, ResponsiveContainer, Tooltip, XAxis, YAxis } from "recharts";
 import { KpiTile } from "@/components/kpi-tile";
+import { CommunicationCard } from "@/components/communication-card";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
@@ -16,10 +17,6 @@ import { useAnalyticsOverview } from "@/hooks/use-analytics";
 import { ActivityFeed } from "@/components/activity-feed";
 import { UpcomingEvents } from "@/components/upcoming-events";
 
-function formatCurrency(amount: number) {
-  return `₹${amount.toLocaleString("en-IN")}`;
-}
-
 export function SuperAdminDashboard() {
   const { data: currentUser } = useCurrentUser();
   const { data: admins } = useManagedUsers("ADMIN");
@@ -29,8 +26,11 @@ export function SuperAdminDashboard() {
   const { data: activity, isLoading: activityLoading } = useRecentActivity();
   const { data: overview } = useAnalyticsOverview();
 
-  const totalCampaigns = (campaignSummary?.active ?? 0) + (campaignSummary?.upcoming ?? 0) + (campaignSummary?.completed ?? 0);
+  // Straight from the API. Adding the three status buckets together left
+  // drafts out entirely, so an org whose campaigns were all drafts saw zero.
+  const totalCampaigns = campaignSummary?.total ?? 0;
   const chartData = [
+    { name: "Draft", count: campaignSummary?.draft ?? 0 },
     { name: "Active", count: campaignSummary?.active ?? 0 },
     { name: "Upcoming", count: campaignSummary?.upcoming ?? 0 },
     { name: "Completed", count: campaignSummary?.completed ?? 0 },
@@ -62,17 +62,11 @@ export function SuperAdminDashboard() {
         <KpiTile label="Total Campaigns" value={totalCampaigns} href="/campaigns" />
       </div>
 
-      <div className="mb-6 grid grid-cols-2 gap-4 md:grid-cols-3 lg:grid-cols-5">
+      <div className="mb-6 grid grid-cols-2 gap-4 md:grid-cols-3">
         <KpiTile
           label="Target Achievement"
           value={overview ? `${overview.targetAchievementPct}%` : "-"}
           sub={overview ? `${overview.totalAchieved.toLocaleString()} / ${overview.totalTarget.toLocaleString()}` : undefined}
-        />
-        <KpiTile
-          label="Budget Utilization"
-          value={overview ? `${overview.budgetUtilizationPct}%` : "-"}
-          sub={overview ? formatCurrency(overview.totalSpentBudget) : undefined}
-          tone={overview && overview.budgetUtilizationPct >= 90 ? "warning" : "default"}
         />
         <KpiTile
           label="Task Completion"
@@ -86,11 +80,6 @@ export function SuperAdminDashboard() {
           sub={overview ? `${overview.grievanceResolutionPct}% resolved` : undefined}
           href="/grievances"
         />
-        <KpiTile
-          label="Pending Expenses"
-          value={overview?.pendingExpenses.count ?? "-"}
-          sub={overview ? formatCurrency(overview.pendingExpenses.amount) : undefined}
-        />
       </div>
 
       <div className="mb-6 grid grid-cols-1 gap-4 lg:grid-cols-3">
@@ -99,7 +88,7 @@ export function SuperAdminDashboard() {
             <CardTitle>Active Campaigns</CardTitle>
           </CardHeader>
           <CardContent>
-            <CampaignProgressList campaigns={overview?.campaigns} />
+            <CampaignProgressList campaigns={overview?.campaigns} totalInScope={campaignSummary?.total} />
           </CardContent>
         </Card>
 
@@ -112,6 +101,13 @@ export function SuperAdminDashboard() {
           </CardContent>
         </Card>
       </div>
+
+      {/* Straight from the Message Log — org-wide for a Super Admin. */}
+      {overview?.communication && (
+        <div className="mb-6">
+          <CommunicationCard stats={overview.communication} href="/message-log" />
+        </div>
+      )}
 
       <div className="mb-6 grid grid-cols-1 gap-4 lg:grid-cols-3">
         <Card className="lg:col-span-2">

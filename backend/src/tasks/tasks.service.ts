@@ -1,16 +1,33 @@
-import { BadRequestException, ForbiddenException, Injectable, NotFoundException } from "@nestjs/common";
+import { BadRequestException, ForbiddenException, Injectable, Logger, NotFoundException } from "@nestjs/common";
 import { CreateTaskBatchDto, CreateTaskDto, ProgressUpdateDto, TaskStatus, UpdateTaskDto } from "../shared-types";
 import { PrismaService } from "../prisma/prisma.service";
 import { AuthenticatedUser } from "../auth/types";
 import { AllocationsService } from "../allocations/allocations.service";
-import { NotificationsService, SheetMessageContext } from "../notifications/notifications.service";
+import { NotificationsService, MessageContext } from "../notifications/notifications.service";
 import { RegionsService } from "../regions/regions.service";
 import { AiService } from "../ai/ai.service";
 import { WhatsAppApiService } from "../whatsapp-api/whatsapp-api.service";
 import { FyxoWhatsAppService } from "../fyxo-whatsapp/fyxo-whatsapp.service";
-import { FYXO_TEMPLATES, renderFyxoBody } from "../fyxo-whatsapp/templates";
-import { GoogleSheetsService } from "../google-sheets/google-sheets.service";
+import { FYXO_TEMPLATES, renderFyxoBody, TEMPLATE_VARIABLE_ORDER, taskButtonPayloads } from "../fyxo-whatsapp/templates";
+import { MessageLogService } from "../message-log/message-log.service";
 import { MessageTemplatesService } from "../message-templates/message-templates.service";
+
+/**
+ * Which existing message-log statuses an incoming delivery event is allowed
+ * to overwrite. The WhatsApp lifecycle only moves forward — sent, delivered,
+ * read — but the webhooks reporting it can arrive in any order, so each
+ * event may only overwrite a status at or below its own stage.
+ *
+ * FAILED is the exception: it can replace a still-in-flight SENT, but never
+ * a DELIVERED or READ. Once a message has demonstrably arrived, a late
+ * failure report is stale, not news.
+ */
+const OVERWRITABLE_BY: Record<string, string[]> = {
+  SENT: ["PENDING", "QUEUED", "SENT"],
+  DELIVERED: ["PENDING", "QUEUED", "SENT", "DELIVERED"],
+  READ: ["PENDING", "QUEUED", "SENT", "DELIVERED", "READ"],
+  FAILED: ["PENDING", "QUEUED", "SENT", "FAILED"],
+};
 
 // Every task-assignment template's only body variable is the Cadre's name —
 // the approved "polios" one reads "Hi {{1}}, we have assigned a task to you
@@ -24,11 +41,93 @@ import { MessageTemplatesService } from "../message-templates/message-templates.
 // falling back to the shared "polios" default when none is assigned. All of
 // them are assumed to share this one-variable shape — a per-Admin template
 // with a different variable count would need its own handling here.
-function taskAssignedTemplate(owner: TemplateOwnerFields) {
+function taskAssignedTemplate(owner: TemplateOwnerFields, task?: TemplateTaskContext, variableCount = 1) {
+  const template = MessageTemplatesService.resolveFor(owner);
   return {
-    ...MessageTemplatesService.resolveFor(owner),
-    variablesFor: (cadreName: string) => [cadreName],
+    ...template,
+    variablesFor: (cadreName: string) =>
+      buildTemplateVariables(variableCount, cadreName, task, owner.fyxoTemplateVariables, template.name),
   };
+}
+
+/**
+ * Fills exactly as many variables as the template declares, in the order
+ * WhatsApp templates conventionally read (and as the integration guide's own
+ * task_assigned example does): who, what, when.
+ *
+ *   {{1}} the Cadre's name      {{2}} the task name      {{3}} the deadline
+ *
+ * The count has to match the template exactly or Fyxo rejects the send with a
+ * 400 before anything reaches Meta (§5), which is why it's driven by the
+ * synced catalogue rather than assumed. Anything beyond the third slot gets
+ * an em dash: a template that needs more than this has data PoliOS doesn't
+ * know about, and padding is far better than a hard failure for every send.
+ *
+ * Values are single-line by necessity — §5: "A value cannot contain a line
+ * break. Meta rejects the whole send." Hence the task NAME, never its
+ * description.
+ */
+function buildTemplateVariables(
+  count: number,
+  cadreName: string,
+  task?: TemplateTaskContext,
+  mapping?: string[],
+  templateName?: string,
+): string[] {
+  const value = (source: string): string => {
+    switch (source) {
+      case "CADRE_NAME":
+        return cadreName;
+      case "CAMPAIGN_NAME":
+        return task?.campaignName ?? "—";
+      case "TASK_NAME":
+        return task?.name ?? "your task";
+      case "DEADLINE":
+        return task ? task.deadline.toLocaleDateString("en-IN", { day: "numeric", month: "short" }) : "—";
+      case "PRIORITY":
+        return task?.priority ? task.priority.charAt(0) + task.priority.slice(1).toLowerCase() : "—";
+      case "ASSIGNED_BY":
+        return task?.assignedByName ?? "—";
+      default:
+        return "—";
+    }
+  };
+
+  // Resolved per SLOT, not all-or-nothing. The owner's own mapping wins
+  // wherever it names a source; any slot it doesn't reach falls back to the
+  // template's declared order (TEMPLATE_VARIABLE_ORDER — task_assigned reads
+  // who/campaign/what/when, not the conventional who/what/when), and only
+  // then to the generic default.
+  //
+  // All-or-nothing is what produced "Campaign: — Task: — Due Date: —": an
+  // owner whose mapping was saved as a single ["CADRE_NAME"] back when their
+  // template took one variable kept that mapping after being moved to a
+  // four-variable template, and a mapping shorter than the template silently
+  // blanked every remaining slot. A partial mapping now fills what it
+  // specifies and lets the template's own order cover the rest.
+  const declared = (templateName ? TEMPLATE_VARIABLE_ORDER[templateName] : undefined) ?? DEFAULT_VARIABLE_ORDER;
+  const sources = Array.from(
+    { length: Math.max(1, count) },
+    (_, i) => mapping?.[i] || declared[i] || "",
+  );
+  return sources.map((source) => flattenForTemplate(value(source)));
+}
+
+const DEFAULT_VARIABLE_ORDER = ["CADRE_NAME", "TASK_NAME", "DEADLINE"];
+
+export interface TemplateTaskContext {
+  name: string;
+  deadline: Date;
+  priority?: string;
+  assignedByName?: string;
+  /** Fills {{2}} of task_assigned_v2; "—" for a task with no campaign. */
+  campaignName?: string;
+}
+
+// Line breaks in a variable make Meta reject the entire send (§5), so they're
+// flattened to spaces here rather than trusted not to appear.
+function flattenForTemplate(value: string): string {
+  return value.replace(/\s+/g, " ").trim() || "—";
 }
 
 // The template-owning columns on a User row — whoever created the task.
@@ -36,6 +135,7 @@ type TemplateOwnerFields = {
   fyxoTemplateName: string | null;
   fyxoTemplateLanguage: string | null;
   fyxoTemplateBody: string | null;
+  fyxoTemplateVariables?: string[];
 };
 
 // Everything the sheet log and the template resolver need about a task's
@@ -46,10 +146,13 @@ const TEMPLATE_OWNER_SELECT = {
   fyxoTemplateName: true,
   fyxoTemplateLanguage: true,
   fyxoTemplateBody: true,
+  fyxoTemplateVariables: true,
 } as const;
 
 @Injectable()
 export class TasksService {
+  private readonly logger = new Logger(TasksService.name);
+
   constructor(
     private readonly prisma: PrismaService,
     private readonly allocationsService: AllocationsService,
@@ -58,7 +161,8 @@ export class TasksService {
     private readonly aiService: AiService,
     private readonly whatsAppApi: WhatsAppApiService,
     private readonly fyxoWhatsApp: FyxoWhatsAppService,
-    private readonly googleSheets: GoogleSheetsService,
+    private readonly messageLog: MessageLogService,
+    private readonly messageTemplates: MessageTemplatesService,
   ) {}
 
   /**
@@ -73,30 +177,37 @@ export class TasksService {
    *     first send, so each Admin's independent work is separated out.
    * Either way it's the same Super-Admin-connected spreadsheet.
    */
-  private sheetContext(
+  private messageContext(
     taskName: string,
-    createdBy: { name: string; role: string },
+    _createdBy: { name: string; role: string },
     assignedByName: string,
-  ): SheetMessageContext {
-    return {
-      taskName,
-      assignedByName,
-      tab: createdBy.role === "ADMIN" ? createdBy.name : null,
-    };
+    assignedById?: string,
+    taskIdFor?: (recipientUserId: string) => string | undefined,
+  ): MessageContext {
+    return { taskName, assignedByName, assignedById, taskIdFor };
   }
 
   /**
-   * sheetContext() for an already-created Task row. A Task always has an
+   * messageContext() for an already-created Task row. A Task always has an
    * assigner but not always a batch (create() makes single tasks directly),
    * so a batch-less task falls back to its assigner as the creator — which
    * for a directly-created task is the same person anyway.
    */
-  private taskSheetContext(task: {
+  private taskMessageContext(task: {
+    id: string;
     name: string;
+    assignedById: string;
     assignedBy: { name: string; role: string };
     batch: { createdBy: { name: string; role: string } } | null;
-  }): SheetMessageContext {
-    return this.sheetContext(task.name, task.batch?.createdBy ?? task.assignedBy, task.assignedBy.name);
+  }): MessageContext {
+    return this.messageContext(
+      task.name,
+      task.batch?.createdBy ?? task.assignedBy,
+      task.assignedBy.name,
+      task.assignedById,
+      // One Task row, one recipient — the id is fixed for this send.
+      () => task.id,
+    );
   }
 
   /**
@@ -106,40 +217,63 @@ export class TasksService {
    * directly: retryWhatsapp() and sendCompletionCheck(). Never throws; the
    * sheet is a reporting side-channel, not part of the send's success.
    */
-  private async logToSheet(
-    name: string,
-    phone: string,
+  private async logMessage(
+    cadre: { id: string; name: string; phone: string },
     message: string,
-    success: boolean,
-    context: SheetMessageContext,
+    result: { success: boolean; messageId?: string },
+    context: MessageContext,
+    kind: "RETRY" | "COMPLETION_CHECK",
+    taskId: string,
+    templateName?: string,
+    // Recorded so a Resend from the Message Log repeats this exact message.
+    variables?: string[],
   ) {
     try {
-      await this.googleSheets.appendTaskMessageRow({
-        name,
-        phone,
+      await this.messageLog.record({
+        cadreId: cadre.id,
+        cadreName: cadre.name,
+        cadrePhone: cadre.phone,
         message,
+        taskId,
         taskName: context.taskName,
+        assignedById: context.assignedById,
         assignedByName: context.assignedByName,
-        tab: context.tab,
-        status: success ? "SENT" : "FAILED",
-        sentAt: new Date(),
+        kind,
+        templateName,
+        variables,
+        channel: kind === "RETRY" && !templateName ? "META" : "FYXO",
+        success: result.success,
+        providerMessageId: result.messageId,
       });
     } catch {
-      // already logged by GoogleSheetsService
+      // already logged by MessageLogService
     }
   }
 
+  /**
+   * Creates one task and hands it straight to a Cadre — no batch, no
+   * allocation step. Open to a Super Admin and to an Admin anywhere in
+   * their own area, which is the check that matters: an Admin who covers a
+   * Constituency is responsible for every Cadre in it, not only the ones
+   * reporting directly to them.
+   */
   async create(dto: CreateTaskDto, user: AuthenticatedUser) {
     const assignee = await this.prisma.user.findUnique({ where: { id: dto.assignedToId } });
     if (!assignee) throw new NotFoundException("Assignee not found");
-    if (assignee.parentUserId !== user.id && user.role !== "SUPER_ADMIN") {
-      throw new ForbiddenException("You can only assign tasks to your own direct reports");
+    if (user.role !== "SUPER_ADMIN") {
+      const withinScope = await this.regionsService.isWithinScope(user.regionId, assignee.regionId);
+      if (!withinScope) {
+        throw new ForbiddenException("That Cadre is outside your own area");
+      }
     }
+
+    const pollingStationId = await this.resolvePollingStation(dto.pollingStationId, user);
 
     const task = await this.prisma.task.create({
       data: {
-        campaignId: dto.campaignId,
+        campaignId: await this.assertCampaignUsable(dto.campaignId, user),
         allocationId: dto.allocationId,
+        pollingStationId,
         name: dto.name,
         description: dto.description,
         assignedToId: dto.assignedToId,
@@ -156,6 +290,12 @@ export class TasksService {
       select: TEMPLATE_OWNER_SELECT,
     });
 
+    // {{2}} of a four-variable template. Without it the Cadre reads
+    // "Campaign: —" on a task that does belong to a campaign.
+    const campaign = task.campaignId
+      ? await this.prisma.campaign.findUnique({ where: { id: task.campaignId }, select: { name: true } })
+      : null;
+
     await this.notificationsService.notify({
       userId: dto.assignedToId,
       type: "TASK_ASSIGNED",
@@ -163,8 +303,18 @@ export class TasksService {
       message: `${task.name} — due ${task.deadline.toDateString()}. Reply YES to accept or NO to decline.`,
       relatedEntityType: "Task",
       relatedEntityId: task.id,
-      fyxoTemplate: taskAssignedTemplate(creator),
-      sheetContext: this.sheetContext(task.name, creator, user.name),
+      fyxoTemplate: taskAssignedTemplate(
+        creator,
+        {
+          name: task.name,
+          deadline: task.deadline,
+          priority: task.priority,
+          assignedByName: user.name,
+          campaignName: campaign?.name,
+        },
+        await this.messageTemplates.variableCountFor(MessageTemplatesService.resolveFor(creator).name),
+      ),
+      messageContext: this.messageContext(task.name, creator, user.name, user.id),
     });
 
     return task;
@@ -200,11 +350,11 @@ export class TasksService {
         name: dto.name,
         objective: dto.objective,
         description: dto.description,
-        additionalDetails: dto.additionalDetails,
         remarks: dto.remarks,
         deadline: dto.deadline,
         priority: dto.priority,
-        campaignId: dto.campaignId,
+        campaignId: await this.assertCampaignUsable(dto.campaignId, user),
+        pollingStationId: await this.resolvePollingStation(dto.pollingStationId, user),
         targetRegionIds: dto.regionIds,
         attachmentUrls: dto.attachmentUrls,
         createdById: user.id,
@@ -229,6 +379,115 @@ export class TasksService {
     return { batch, cadreCount: 0, awaitingAllocation: true };
   }
 
+  /**
+   * Validates an official location: it must be a Polling Station (the leaf
+   * of the ECI hierarchy) and, for an Admin, inside their own area. Higher
+   * levels are rejected rather than accepted-and-ignored — a task recorded
+   * against "Khairatabad" with no station is not an official location, and
+   * silently keeping it would make the four ECI fields on the task look
+   * complete when they aren't.
+   */
+  private async resolvePollingStation(pollingStationId: string | undefined, user: AuthenticatedUser) {
+    if (!pollingStationId) return undefined;
+
+    const station = await this.prisma.region.findUnique({
+      where: { id: pollingStationId },
+      select: { id: true, type: true },
+    });
+    if (!station) throw new BadRequestException("Polling Station not found");
+    if (station.type !== "BOOTH") {
+      throw new BadRequestException("Select a Polling Station, not a State, District or Constituency");
+    }
+    if (user.role !== "SUPER_ADMIN") {
+      const withinScope = await this.regionsService.isWithinScope(user.regionId, station.id);
+      if (!withinScope) throw new ForbiddenException("That Polling Station is outside your own area");
+    }
+    return station.id;
+  }
+
+  /**
+   * Validates the campaign a task is being filed under: it must exist, and
+   * an Admin may only file against a campaign they run or created. Returns
+   * the id so callers can inline it, or undefined for an unlinked task.
+   */
+  private async assertCampaignUsable(campaignId: string | undefined, user: AuthenticatedUser) {
+    if (!campaignId) return undefined;
+
+    const campaign = await this.prisma.campaign.findUnique({
+      where: { id: campaignId },
+      select: {
+        id: true,
+        name: true,
+        createdById: true,
+        assignedAdmins: { select: { adminId: true, status: true } },
+      },
+    });
+    if (!campaign) throw new BadRequestException("Campaign not found");
+    if (user.role === "SUPER_ADMIN") return campaign.id;
+
+    const assignment = campaign.assignedAdmins.find((a) => a.adminId === user.id);
+    const isCreator = campaign.createdById === user.id;
+    if (!assignment && !isCreator) {
+      throw new ForbiddenException("You are not one of that campaign's Admins");
+    }
+
+    // Being handed a campaign isn't the same as taking it on. An Admin who
+    // hasn't accepted may read the campaign, but filing work against it —
+    // and so putting it in front of their Cadres — waits on their answer.
+    // The creator is exempt: an Admin who made the campaign themselves has
+    // nobody to accept it from.
+    if (assignment && !isCreator && assignment.status !== "ACCEPTED") {
+      throw new ForbiddenException(
+        assignment.status === "DECLINED"
+          ? `You declined "${campaign.name}", so you cannot assign work under it.`
+          : `Accept "${campaign.name}" before assigning work under it.`,
+      );
+    }
+    return campaign.id;
+  }
+
+  /**
+   * The five official Election Commission fields for a task, resolved from
+   * its Polling Station by walking up the hierarchy. Kept derived rather
+   * than copied onto the Task so a station corrected in the area tree is
+   * corrected everywhere at once, and the AC/District/State can never be
+   * out of step with the station they belong to.
+   */
+  private async officialLocation(pollingStationId: string | null | undefined) {
+    if (!pollingStationId) return null;
+
+    const station = await this.prisma.region.findUnique({
+      where: { id: pollingStationId },
+      select: {
+        name: true,
+        number: true,
+        type: true,
+        parent: {
+          select: {
+            name: true,
+            number: true,
+            parent: { select: { name: true, parent: { select: { name: true } } } },
+          },
+        },
+      },
+    });
+    // Anything above a station has no official station number, and walking
+    // its parents would label a District as a Constituency. Better to say
+    // "not recorded" than to show four fields that are quietly wrong.
+    if (!station || station.type !== "BOOTH") return null;
+
+    const constituency = station.parent;
+    const district = constituency?.parent;
+    return {
+      state: district?.parent?.name ?? null,
+      district: district?.name ?? null,
+      assemblyConstituency: constituency?.name ?? null,
+      assemblyConstituencyNo: constituency?.number ?? null,
+      pollingStationNo: station.number,
+      pollingStationName: station.name,
+    };
+  }
+
   /** Every active Cadre named directly, validated to be within the given Admin's own region scope. */
   private async resolveNamedCadres(cadreIds: string[], user: AuthenticatedUser) {
     const cadres = await this.prisma.user.findMany({
@@ -247,7 +506,7 @@ export class TasksService {
     return cadres;
   }
 
-  /** Every active Cadre anywhere under the given area(s) (District/Mandal/Booth) — the broadcast resolution. */
+  /** Every active Cadre anywhere under the given area(s) (District/Constituency/Booth) — the broadcast resolution. */
   private async resolveAreaCadres(regionIds: string[]) {
     const descendantSets = await Promise.all(regionIds.map((id) => this.regionsService.descendantIds(id)));
     const scopedRegionIds = Array.from(new Set(descendantSets.flat()));
@@ -268,14 +527,14 @@ export class TasksService {
    * would.
    */
   async allocateToCadres(batchId: string, input: { regionIds: string[]; cadreIds: string[] }, user: AuthenticatedUser) {
-    if (user.role !== "ADMIN") {
-      throw new ForbiddenException("Only Admins allocate tasks to Cadres");
+    if (user.role === "CADRE") {
+      throw new ForbiddenException("Only Super Admins and Admins allocate tasks to Cadres");
     }
 
     const batch = await this.prisma.taskBatch.findUnique({
       where: { id: batchId },
       // createdBy drives both which template goes out (taskAssignedTemplate)
-      // and which sheet tab it's logged to (sheetContext) — the same owner
+      // and which sheet tab it's logged to (messageContext) — the same owner
       // for both, deliberately.
       include: { createdBy: { select: TEMPLATE_OWNER_SELECT } },
     });
@@ -283,6 +542,12 @@ export class TasksService {
     if (!batch.awaitingAllocation) {
       throw new BadRequestException("This task does not require allocation");
     }
+
+    // The gate that matters: allocating is the moment a campaign's work
+    // actually reaches Cadres. An Admin who hasn't accepted the campaign
+    // this batch belongs to cannot push it out to their people, however the
+    // batch was created or who routed it to them.
+    await this.assertCampaignUsable(batch.campaignId ?? undefined, user);
 
     // A region — whether picked directly, or the home region of a
     // hand-picked Cadre — must be inside both the Admin's own scope and the
@@ -338,10 +603,13 @@ export class TasksService {
           data: {
             batchId: batch.id,
             campaignId: batch.campaignId,
+            // Each Cadre's row carries the batch's official location, so a
+            // Cadre asking "where?" over WhatsApp is answered from their own
+            // Task rather than having to walk back up to the batch.
+            pollingStationId: batch.pollingStationId,
             name: batch.name,
             objective: batch.objective,
             description: batch.description,
-            additionalDetails: batch.additionalDetails,
             remarks: batch.remarks,
             assignedToId: cadre.id,
             assignedById: user.id,
@@ -352,7 +620,38 @@ export class TasksService {
       ),
     );
 
-    const allocationTemplate = taskAssignedTemplate(batch.createdBy);
+    // Each Cadre's own Task id, so the "Task Details" tap comes back to us as
+    // `reference` identifying exactly that assignment (API.md §5/§11) rather
+    // than just "somebody with this phone number tapped".
+    const taskIdByCadre = new Map(createdTasks.map((t) => [t.assignedToId, t.id]));
+
+    const resolvedName = MessageTemplatesService.resolveFor(batch.createdBy).name;
+    const variableCount = await this.messageTemplates.variableCountFor(resolvedName);
+    // {{2}} of task_assigned_v2. Looked up once for the whole batch — every
+    // task in it shares the batch's campaign.
+    const campaign = batch.campaignId
+      ? await this.prisma.campaign.findUnique({ where: { id: batch.campaignId }, select: { name: true } })
+      : null;
+    const allocationTemplate = {
+      ...taskAssignedTemplate(
+        batch.createdBy,
+        {
+          name: batch.name,
+          deadline: batch.deadline,
+          priority: batch.priority,
+          assignedByName: user.name,
+          campaignName: campaign?.name,
+        },
+        variableCount,
+      ),
+      // One payload per Quick Reply, positionally matched to the template's
+      // buttons, so a tap says WHICH button as well as which assignment.
+      // A single-button template ignores the extra entry.
+      buttonPayloadsFor: (cadreId: string) => {
+        const taskId = taskIdByCadre.get(cadreId);
+        return taskId ? taskButtonPayloads(taskId) : undefined;
+      },
+    };
 
     // notifyMany reports per-Cadre WhatsApp success/failure — persisted onto
     // each Task row so a partial failure is visible and retryable rather
@@ -369,7 +668,15 @@ export class TasksService {
         // routed here, this Admin's own for one they created themselves.
         fyxoTemplate: allocationTemplate,
         // user is the allocating Admin — the "Assigned By" column.
-        sheetContext: this.sheetContext(batch.name, batch.createdBy, user.name),
+        // taskIdByCadre was already built for buttonPayloadsFor; reusing it
+        // means the logged task and the button payload can never disagree.
+        messageContext: this.messageContext(
+          batch.name,
+          batch.createdBy,
+          user.name,
+          user.id,
+          (cadreId) => taskIdByCadre.get(cadreId),
+        ),
       },
     );
 
@@ -447,27 +754,49 @@ export class TasksService {
       // different one if the Super Admin reassigned it in between, which
       // would make the retry a different message than the one being retried.
       const owner = task.batch?.createdBy ?? task.assignedBy;
-      const resolved = taskAssignedTemplate(owner);
+      // A retry must read identically to the original, campaign included.
+      const retryCampaign = task.campaignId
+        ? await this.prisma.campaign.findUnique({ where: { id: task.campaignId }, select: { name: true } })
+        : null;
+      const resolved = taskAssignedTemplate(
+        owner,
+        {
+          name: task.name,
+          deadline: task.deadline,
+          priority: task.priority,
+          campaignName: retryCampaign?.name,
+        },
+        await this.messageTemplates.variableCountFor(task.fyxoTemplateName ?? MessageTemplatesService.resolveFor(owner).name),
+      );
       const template = task.fyxoTemplateName
         ? { name: task.fyxoTemplateName, language: resolved.language, body: resolved.body }
         : resolved;
+
+      // Fill as many variables as this template declares — resolved above.
+      // Hardcoding one here silently sent the wrong count to a multi-variable
+      // template, which Fyxo rejects outright (§5).
+      const variables = resolved.variablesFor(task.assignedTo.name);
 
       const idempotencyKey = `assignment-${task.id}-${template.name}-retry-${Date.now()}`;
       const result = await this.fyxoWhatsApp.sendTemplateMessage({
         to: task.assignedTo.phone,
         templateName: template.name,
         templateLanguage: template.language,
-        // Every assignment template's only body variable is the Cadre's
-        // name — see taskAssignedTemplate()'s doc comment.
-        variables: [task.assignedTo.name],
+        variables,
+        // Same payloads as the original send — a retry must produce taps
+        // that resolve to the same task and the same actions.
+        buttonPayloads: taskButtonPayloads(task.id),
         idempotencyKey,
       });
-      await this.logToSheet(
-        task.assignedTo.name,
-        task.assignedTo.phone,
-        renderFyxoBody(template, [task.assignedTo.name]),
-        result.success,
-        this.taskSheetContext(task),
+      await this.logMessage(
+        task.assignedTo,
+        renderFyxoBody(template, variables),
+        result,
+        this.taskMessageContext(task),
+        "RETRY",
+        task.id,
+        template.name,
+        variables,
       );
       return this.prisma.task.update({
         where: { id: taskId },
@@ -482,7 +811,7 @@ export class TasksService {
 
     const message = `*New task assigned*\n${task.name} — due ${task.deadline.toDateString()}. Reply YES to accept or NO to decline.\n\n(Reply MENU to open PoliOS)`;
     const result = await this.whatsAppApi.sendText(task.assignedTo.phone, message);
-    await this.logToSheet(task.assignedTo.name, task.assignedTo.phone, message, result.success, this.taskSheetContext(task));
+    await this.logMessage(task.assignedTo, message, result, this.taskMessageContext(task), "RETRY", task.id);
 
     return this.prisma.task.update({
       where: { id: taskId },
@@ -516,11 +845,45 @@ export class TasksService {
    * correlated via fyxoMessageId instead of Meta's wamid — see
    * FyxoAgentWebhookController.
    */
-  async handleFyxoStatusUpdate(fyxoMessageId: string, eventType: string, at: Date = new Date()): Promise<boolean> {
+  async handleFyxoStatusUpdate(
+    fyxoMessageId: string,
+    eventType: string,
+    at: Date = new Date(),
+    error?: string,
+  ): Promise<boolean> {
+    // The message log row is updated even when no Task matches — a send can
+    // be logged without a Task row (a plain notification), and the reason a
+    // message never arrived is worth keeping either way.
+    await this.recordDeliveryOnLog(fyxoMessageId, eventType, error);
+
     const task = await this.prisma.task.findFirst({ where: { fyxoMessageId } });
     if (!task) return false;
     const status = eventType.replace(/^message\./, ""); // "message.delivered" -> "delivered"
     return this.applyDeliveryStatus(task.id, status, at, task.deliveredAt);
+  }
+
+  /**
+   * Mirrors the provider's verdict onto the message log, so the Message Log
+   * page shows what actually happened rather than "SENT" — which only ever
+   * meant "Fyxo accepted it", not "it arrived". Meta's own error wording is
+   * stored verbatim because it usually names the fix.
+   */
+  private async recordDeliveryOnLog(providerMessageId: string, eventType: string, error?: string) {
+    const status = eventType.replace(/^message\./, "").toUpperCase();
+    if (!["SENT", "DELIVERED", "READ", "FAILED"].includes(status)) return;
+    try {
+      await this.prisma.taskMessageLog.updateMany({
+        // Only ever move forward. Fyxo does not guarantee ordering — a
+        // message.sent has already been observed arriving after that same
+        // message's delivered event — so writing the status unconditionally
+        // lets a late event drag a row that reached READ back to SENT, which
+        // reads on the Message Log as "the Cadre never opened it".
+        where: { providerMessageId, status: { in: OVERWRITABLE_BY[status] } },
+        data: { status, ...(error ? { failureReason: error } : {}) },
+      });
+    } catch (err) {
+      this.logger.error(`Failed to record delivery status on message log: ${(err as Error).message}`);
+    }
   }
 
   private async applyDeliveryStatus(taskId: string, status: string, at: Date, currentDeliveredAt: Date | null): Promise<boolean> {
@@ -548,9 +911,9 @@ export class TasksService {
    * own region scope AND the batch's original target area, who hasn't been
    * allocated a Task yet. Using "still has an unallocated eligible Cadre"
    * rather than "this Admin hasn't allocated anyone" matters when scopes
-   * nest — e.g. a District Admin's scope contains a Mandal Admin's: once the
-   * Mandal Admin allocates their Cadres, the batch must stay pending for the
-   * District Admin if other Mandals in the District still need allocating,
+   * nest — e.g. a District Admin's scope contains a Constituency Admin's: once the
+   * Constituency Admin allocates their Cadres, the batch must stay pending for the
+   * District Admin if other Constituencies in the District still need allocating,
    * and only actually drop off once no eligible Cadre is left anywhere.
    */
   async listPendingAllocation(user: AuthenticatedUser) {
@@ -613,8 +976,8 @@ export class TasksService {
    * routed to them and act once Cadres exist, rather than it silently
    * vanishing with no trace beyond the original notification. This also
    * matters when scopes nest — e.g. a District Admin's scope contains a
-   * Mandal Admin's: once the Mandal Admin allocates their Cadres, the batch
-   * must stay pending for the District Admin if other Mandals in the
+   * Constituency Admin's: once the Constituency Admin allocates their Cadres, the batch
+   * must stay pending for the District Admin if other Constituencies in the
    * District still need allocating, and only actually drop off once every
    * eligible Cadre anywhere in scope has been allocated.
    */
@@ -657,48 +1020,87 @@ export class TasksService {
   }
 
   /** Every active Admin whose own region scope overlaps any of the given target region(s). */
-  private async findAdminsForRegions(targetRegionIds: string[]): Promise<{ id: string }[]> {
-    const admins = await this.prisma.user.findMany({
-      where: { role: "ADMIN", isActive: true },
-      select: { id: true, regionId: true },
-    });
-
-    const targetDescendantSets = await Promise.all(targetRegionIds.map((id) => this.regionsService.descendantIds(id)));
-    const targetScope = new Set(targetDescendantSets.flat());
-
-    const matches: { id: string }[] = [];
-    for (const admin of admins) {
-      if (targetScope.has(admin.regionId)) {
-        matches.push({ id: admin.id });
-        continue;
-      }
-      const adminDescendants = await this.regionsService.descendantIds(admin.regionId);
-      if (targetRegionIds.some((t) => adminDescendants.includes(t))) {
-        matches.push({ id: admin.id });
-      }
-    }
-    return matches;
+  /** Delegates to the shared rule so task routing and campaign assignment agree. */
+  private findAdminsForRegions(targetRegionIds: string[]): Promise<{ id: string }[]> {
+    return this.regionsService.adminsCovering(targetRegionIds);
   }
 
-  findMany(filters: { assignedToId?: string; status?: TaskStatus; campaignId?: string }) {
+  /**
+   * Scoped to the caller, never to the query string. A Cadre sees only their
+   * own tasks; an Admin only those assigned inside their own region subtree.
+   * Previously the filters were passed straight to Prisma, so any
+   * authenticated user could read every task in the system by omitting them
+   * — or read one specific Cadre's by passing their id.
+   */
+  async findMany(
+    filters: { assignedToId?: string; status?: TaskStatus; campaignId?: string },
+    user: AuthenticatedUser,
+  ) {
+    const where: Record<string, unknown> = { ...filters };
+
+    if (user.role === "CADRE") {
+      // Their own tasks only — an assignedToId in the query cannot widen this.
+      where.assignedToId = user.id;
+    } else if (user.role === "ADMIN") {
+      const scoped = await this.regionsService.descendantIds(user.regionId);
+      where.assignedTo = { regionId: { in: scoped } };
+    }
+
     return this.prisma.task.findMany({
-      where: filters,
+      where,
       include: { assignedTo: { select: { id: true, name: true } } },
       orderBy: { deadline: "asc" },
     });
   }
 
-  async findById(id: string) {
+  /**
+   * `user` is required: without it this returned any task to any
+   * authenticated caller, so a Cadre could read every other Cadre's
+   * assignments by id.
+   */
+  async findById(id: string, user: AuthenticatedUser) {
     const task = await this.prisma.task.findUnique({
       where: { id },
-      include: { progress: { orderBy: { createdAt: "desc" } }, attachments: true },
+      include: {
+        progress: { orderBy: { createdAt: "desc" } },
+        attachments: true,
+        assignedTo: { select: { regionId: true } },
+      },
     });
-    if (!task) throw new NotFoundException("Task not found");
-    return task;
+    await this.assertTaskAccessible(task, user);
+    return task!;
   }
 
-  async update(id: string, dto: UpdateTaskDto) {
-    await this.findById(id);
+  /**
+   * Shared gate for reading or writing one task. A Cadre may only touch a
+   * task assigned to them; an Admin only one inside their region subtree;
+   * a Super Admin anything.
+   *
+   * Reports "not found" rather than "forbidden" for an out-of-scope task, so
+   * the endpoint can't be used to confirm that a given task id exists.
+   */
+  private async assertTaskAccessible(
+    task: { assignedToId: string; assignedTo: { regionId: string } } | null,
+    user: AuthenticatedUser,
+  ) {
+    if (!task) throw new NotFoundException("Task not found");
+    if (user.role === "SUPER_ADMIN") return;
+    if (user.role === "CADRE") {
+      if (task.assignedToId !== user.id) throw new NotFoundException("Task not found");
+      return;
+    }
+    const scoped = new Set(await this.regionsService.descendantIds(user.regionId));
+    if (!scoped.has(task.assignedTo.regionId)) throw new NotFoundException("Task not found");
+  }
+
+  async update(id: string, dto: UpdateTaskDto, user: AuthenticatedUser) {
+    // Same gate as reading it — this was previously callable by any
+    // authenticated user on any task, with no role guard at all.
+    const task = await this.prisma.task.findUnique({
+      where: { id },
+      select: { assignedToId: true, assignedTo: { select: { regionId: true } } },
+    });
+    await this.assertTaskAccessible(task, user);
     return this.prisma.task.update({ where: { id }, data: dto as any });
   }
 
@@ -777,17 +1179,23 @@ export class TasksService {
       templateName: FYXO_TEMPLATES.TASK_COMPLETION_CHECK.name,
       templateLanguage: FYXO_TEMPLATES.TASK_COMPLETION_CHECK.language,
       variables: [task.assignedTo.name],
+      // Both Yes and No carry the task id; which one was tapped is told apart
+      // by the button label Fyxo sends back as `text` (§11).
+      buttonPayloads: [task.id, task.id],
       idempotencyKey,
     });
 
     // Logged before the failure throw below, so a failed check-in still
     // leaves a FAILED row rather than vanishing from the sheet entirely.
-    await this.logToSheet(
-      task.assignedTo.name,
-      task.assignedTo.phone,
+    await this.logMessage(
+      task.assignedTo,
       renderFyxoBody(FYXO_TEMPLATES.TASK_COMPLETION_CHECK, [task.assignedTo.name]),
-      result.success,
-      this.taskSheetContext(task),
+      result,
+      this.taskMessageContext(task),
+      "COMPLETION_CHECK",
+      task.id,
+      FYXO_TEMPLATES.TASK_COMPLETION_CHECK.name,
+      [task.assignedTo.name],
     );
 
     if (!result.success) {
@@ -925,14 +1333,14 @@ export class TasksService {
     return new Map(regions.map((r) => [r.id, r]));
   }
 
-  /** Walks a region's parent chain to find its Mandal ancestor (or itself, if it already is one). */
-  private resolveMandalLabel(
+  /** Walks a region's parent chain to find its Constituency ancestor (or itself, if it already is one). */
+  private resolveConstituencyLabel(
     regionId: string | null | undefined,
     regionById: Map<string, { id: string; name: string; type: string; parentId: string | null }>,
   ): string | null {
     let current = regionId ? regionById.get(regionId) : undefined;
     while (current) {
-      if (current.type === "MANDAL") return current.name;
+      if (current.type === "CONSTITUENCY") return current.name;
       current = current.parentId ? regionById.get(current.parentId) : undefined;
     }
     return null;
@@ -988,6 +1396,99 @@ export class TasksService {
   }
 
   /**
+   * Who a task was actually allocated to, one row per Cadre.
+   *
+   * `id` may be a TaskBatch id (the usual case — a task sent to many
+   * Cadres) or a single Task id, matching what taskDetail() accepts, so the
+   * Campaign Details drawer can pass through whatever it was given.
+   *
+   * There is no per-Cadre numeric target in PoliOS: a Task row *is* the
+   * allocation, carrying a status and ProgressUpdate rows rather than a
+   * quota. So this reports real progress (latest reported percentage) and
+   * delivery state, and does not invent a target/achieved split.
+   */
+  async allocations(id: string, user: AuthenticatedUser) {
+    const batch = await this.prisma.taskBatch.findUnique({
+      where: { id },
+      select: { id: true, targetRegionIds: true, tasks: { select: { assignedTo: { select: { regionId: true } } } } },
+    });
+
+    if (batch) {
+      await this.assertBatchVisible(batch, user);
+    } else {
+      const task = await this.prisma.task.findUnique({
+        where: { id },
+        select: { assignedTo: { select: { regionId: true } } },
+      });
+      if (!task) throw new NotFoundException("Task not found");
+      await this.assertVisible([task.assignedTo.regionId], user);
+    }
+
+    const rows = await this.prisma.task.findMany({
+      where: batch ? { batchId: batch.id } : { id },
+      orderBy: { createdAt: "asc" },
+      select: {
+        id: true,
+        status: true,
+        acknowledgment: true,
+        acknowledgedAt: true,
+        createdAt: true,
+        completedAt: true,
+        whatsappStatus: true,
+        whatsappSentAt: true,
+        deliveredAt: true,
+        readAt: true,
+        fyxoTemplateName: true,
+        fyxoMessageId: true,
+        assignedTo: {
+          select: {
+            id: true,
+            name: true,
+            phone: true,
+            region: { select: { id: true, name: true, type: true } },
+          },
+        },
+        progress: {
+          orderBy: { createdAt: "desc" },
+          take: 1,
+          select: { completionPercentage: true, createdAt: true },
+        },
+      },
+    });
+
+    // A Cadre may only see their own allocation row, never their peers'.
+    const visible = user.role === "CADRE" ? rows.filter((r) => r.assignedTo.id === user.id) : rows;
+
+    return visible.map((row) => ({
+      taskId: row.id,
+      cadre: {
+        id: row.assignedTo.id,
+        name: row.assignedTo.name,
+        // Admins and Super Admins already manage these Cadres and can see
+        // their numbers on the Cadres page, so this exposes nothing new.
+        phone: row.assignedTo.phone,
+      },
+      area: row.assignedTo.region.name,
+      areaType: row.assignedTo.region.type,
+      assignedAt: row.createdAt,
+      status: row.status,
+      acknowledgment: row.acknowledgment,
+      acknowledgedAt: row.acknowledgedAt,
+      completedAt: row.completedAt,
+      progressPct: row.progress[0]?.completionPercentage ?? 0,
+      lastProgressAt: row.progress[0]?.createdAt ?? null,
+      whatsapp: {
+        status: row.whatsappStatus,
+        sentAt: row.whatsappSentAt,
+        deliveredAt: row.deliveredAt,
+        readAt: row.readAt,
+        templateName: row.fyxoTemplateName,
+        messageId: row.fyxoMessageId,
+      },
+    }));
+  }
+
+  /**
    * The main Tasks page: every task-creation unit (a bulk TaskBatch, or a
    * legacy single-assignee Task never part of a batch) as one row, region-
    * scoped to the caller.
@@ -1033,7 +1534,7 @@ export class TasksService {
       });
     } else if (user.role === "ADMIN") {
       const pending = await this.findPendingAllocationBatchesForAdmin(user);
-      // A batch this Admin has already partially allocated (e.g. one Mandal
+      // A batch this Admin has already partially allocated (e.g. one Constituency
       // done, another still pending) has real Task rows in their scope, so
       // it already appears via batchGroups above — showing it again here
       // too would duplicate the row. Only surface the ones with nothing
@@ -1129,7 +1630,10 @@ export class TasksService {
     const batch = await this.prisma.taskBatch.findUnique({
       where: { id },
       include: {
-        createdBy: { select: { name: true } },
+        // TEMPLATE_OWNER_SELECT, not just the name: the creator also decides
+        // which WhatsApp template goes out, which the allocating Admin needs
+        // to see before they send (see outgoingTemplate below).
+        createdBy: { select: TEMPLATE_OWNER_SELECT },
         tasks: {
           include: { assignedTo: { select: { id: true, name: true, regionId: true, region: { select: { name: true, type: true } } } } },
         },
@@ -1148,7 +1652,7 @@ export class TasksService {
       // allocated yet" — a broader-scoped Admin can still have eligible
       // Cadres left even after a narrower nested Admin has allocated theirs.
       const canAllocate =
-        user.role === "ADMIN" && batch.awaitingAllocation
+        user.role !== "CADRE" && batch.awaitingAllocation
           ? await this.hasUnallocatedEligibleCadre(
               batch,
               user.regionId,
@@ -1163,11 +1667,11 @@ export class TasksService {
         name: batch.name,
         objective: batch.objective,
         description: batch.description,
-        additionalDetails: batch.additionalDetails,
         remarks: batch.remarks,
         districts: regions.filter((r) => r.type === "DISTRICT").map((r) => r.name),
-        mandals: regions.filter((r) => r.type === "MANDAL").map((r) => r.name),
+        constituencies: regions.filter((r) => r.type === "CONSTITUENCY").map((r) => r.name),
         booths: regions.filter((r) => r.type === "BOOTH").map((r) => r.name),
+        officialLocation: await this.officialLocation(batch.pollingStationId),
         assignedMembers: batch.tasks.map((t) => ({
           id: t.assignedTo.id,
           taskId: t.id,
@@ -1181,6 +1685,23 @@ export class TasksService {
         priority: batch.priority,
         attachmentUrls: batch.attachmentUrls,
         createdByName: batch.createdBy.name,
+        // Exactly what will go out when this is allocated — resolved the same
+        // way the send resolves it, so the Admin is never guessing. `preview`
+        // substitutes a stand-in for {{1}} (the Cadre's real name at send
+        // time) so they read what the Cadre reads, not a placeholder.
+        outgoingTemplate: (() => {
+          const template = MessageTemplatesService.resolveFor(batch.createdBy);
+          return {
+            name: template.name,
+            language: template.language,
+            body: template.body ?? null,
+            preview: template.body ? renderFyxoBody(template, ["<Cadre name>"]) : null,
+            isDefault: !batch.createdBy.fyxoTemplateName,
+            // Trimmed: names are stored as typed and several carry trailing
+            // spaces, which render as "Rahul Chintha 's template".
+            ownerName: batch.createdBy.name.trim(),
+          };
+        })(),
         createdAt: batch.createdAt,
         currentStatus: batch.awaitingAllocation && batch.tasks.length === 0 ? "AWAITING_ALLOCATION" : this.summarizeStatus(batch.tasks),
       };
@@ -1204,11 +1725,13 @@ export class TasksService {
       name: task.name,
       objective: task.objective,
       description: task.description,
-      additionalDetails: task.additionalDetails,
       remarks: task.remarks,
       districts: task.assignedTo.region.type === "DISTRICT" ? [task.assignedTo.region.name] : [],
-      mandals: task.assignedTo.region.type === "MANDAL" ? [task.assignedTo.region.name] : [],
+      constituencies: task.assignedTo.region.type === "CONSTITUENCY" ? [task.assignedTo.region.name] : [],
       booths: task.assignedTo.region.type === "BOOTH" ? [task.assignedTo.region.name] : [],
+      // Falls back to the Cadre's own station when the task didn't name one
+      // — that is where the work physically happens either way.
+      officialLocation: await this.officialLocation(task.pollingStationId ?? task.assignedTo.regionId),
       assignedMembers: [
         {
           id: task.assignedTo.id,
@@ -1268,6 +1791,10 @@ export class TasksService {
     let name: string;
     let remarks: string | null;
     let isBatch: boolean;
+    // A batch routed to Admins but not yet handed to any Cadre has no Task
+    // rows at all, so every KPI below is legitimately zero. Saying so beats
+    // a screen of zeros that reads as a broken dashboard.
+    let awaitingAllocation = false;
 
     if (batch) {
       await this.assertBatchVisible(batch, user);
@@ -1275,6 +1802,7 @@ export class TasksService {
       name = batch.name;
       remarks = batch.remarks;
       isBatch = true;
+      awaitingAllocation = batch.awaitingAllocation;
     } else {
       const task = await this.prisma.task.findUnique({
         where: { id },
@@ -1299,10 +1827,27 @@ export class TasksService {
     const activeTasks = tasks.filter((t) => t.status !== "CANCELLED");
     const cancelled = tasks.length - activeTasks.length;
 
-    const whatsappSent = activeTasks.filter((t) => t.whatsappStatus === "SENT" || t.whatsappStatus === "DELIVERED" || t.whatsappStatus === "READ").length;
-    const whatsappDelivered = activeTasks.filter((t) => t.whatsappStatus === "DELIVERED" || t.whatsappStatus === "READ").length;
-    const whatsappRead = activeTasks.filter((t) => t.whatsappStatus === "READ").length;
-    const whatsappFailed = activeTasks.filter((t) => t.whatsappStatus === "FAILED").length;
+    // Delivery prefers the message log over Task.whatsappStatus. Both are
+    // written by the same webhook, but only the log is updated when a
+    // message is resent from the Message Log page — that path never rewrites
+    // Task.fyxoMessageId, so the column freezes at its old status while the
+    // log moves on.
+    //
+    // Falls back to the task's own column where the log has nothing: sends
+    // from before the log recorded which task a message belonged to left
+    // those rows with taskId null, and reading the log alone would report
+    // real, delivered messages as zero. The log wins wherever it has an
+    // answer; the column only fills the gaps it can't cover.
+    //
+    // Per recipient, not per message: one Task row is one Cadre, so a Cadre
+    // who needed a retry is counted once however many times we messaged.
+    const loggedStatus = await this.messageLog.latestStatusByTask(activeTasks.map((t) => t.id));
+    const perCadreStatus = activeTasks.map((t) => loggedStatus.get(t.id) ?? t.whatsappStatus);
+    const delivery = MessageLogService.rollUp(perCadreStatus);
+    const whatsappSent = delivery.sent;
+    const whatsappDelivered = delivery.delivered;
+    const whatsappRead = delivery.read;
+    const whatsappFailed = delivery.failed;
     const responded = activeTasks.filter((t) => t.acknowledgment !== "AWAITING").length;
 
     // "Have you completed your task?" check-in — only counted among Cadres
@@ -1369,7 +1914,7 @@ export class TasksService {
         taskId: t.id,
         name: t.assignedTo.name,
         area: `${t.assignedTo.region.name} (${t.assignedTo.region.type})`,
-        mandal: this.resolveMandalLabel(t.assignedTo.regionId, regionById),
+        constituency: this.resolveConstituencyLabel(t.assignedTo.regionId, regionById),
         status: t.status,
         acknowledgment: t.acknowledgment,
         acknowledgedAt: t.acknowledgedAt,
@@ -1418,7 +1963,25 @@ export class TasksService {
     }
     timeline.sort((a, b) => b.at.getTime() - a.at.getTime());
 
-    return { id, isBatch, name, remarks, kpis, cadres, dailyProgress, progressFunnel, timeline: timeline.slice(0, 50) };
+    // Message-level totals alongside the per-recipient ones in `kpis`. The
+    // two answer different questions and will legitimately differ the moment
+    // anything is retried: `kpis.whatsappSent` is how many Cadres we reached,
+    // `communication.total` is how many messages that took.
+    const communication = await this.messageLog.communicationStats({ taskId: { in: activeTasks.map((t) => t.id) } });
+
+    return {
+      id,
+      isBatch,
+      name,
+      remarks,
+      awaitingAllocation,
+      kpis,
+      cadres,
+      dailyProgress,
+      progressFunnel,
+      communication,
+      timeline: timeline.slice(0, 50),
+    };
   }
 
   /**

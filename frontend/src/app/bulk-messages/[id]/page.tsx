@@ -136,7 +136,6 @@ function RecipientsStep({ campaignId, onNext }: { campaignId: string; onNext: ()
 
   const [district, setDistrict] = useState("");
   const [constituency, setConstituency] = useState("");
-  const [mandal, setMandal] = useState("");
   const [booth, setBooth] = useState("");
   const [search, setSearch] = useState("");
   const [showCount, setShowCount] = useState(100);
@@ -149,15 +148,6 @@ function RecipientsStep({ campaignId, onNext }: { campaignId: string; onNext: ()
     () => distinct(options.filter((f) => !district || f.districtName === district).map((f) => f.constituencyName)),
     [options, district],
   );
-  const mandals = useMemo(
-    () =>
-      distinct(
-        options
-          .filter((f) => (!district || f.districtName === district) && (!constituency || f.constituencyName === constituency))
-          .map((f) => f.mandalName),
-      ),
-    [options, district, constituency],
-  );
   const booths = useMemo(
     () =>
       distinct(
@@ -165,19 +155,17 @@ function RecipientsStep({ campaignId, onNext }: { campaignId: string; onNext: ()
           .filter(
             (f) =>
               (!district || f.districtName === district) &&
-              (!constituency || f.constituencyName === constituency) &&
-              (!mandal || f.mandalName === mandal),
+              (!constituency || f.constituencyName === constituency),
           )
           .map((f) => f.boothName),
       ),
-    [options, district, constituency, mandal],
+    [options, district, constituency],
   );
 
   const filtered = useMemo(() => {
     return (recipients ?? []).filter((r) => {
       if (district && r.districtName !== district) return false;
       if (constituency && r.constituencyName !== constituency) return false;
-      if (mandal && r.mandalName !== mandal) return false;
       if (booth && r.boothName !== booth) return false;
       if (search) {
         const q = search.toLowerCase();
@@ -185,7 +173,7 @@ function RecipientsStep({ campaignId, onNext }: { campaignId: string; onNext: ()
       }
       return true;
     });
-  }, [recipients, district, constituency, mandal, booth, search]);
+  }, [recipients, district, constituency, booth, search]);
 
   const selectedCount = (recipients ?? []).filter((r) => r.selected).length;
   const eligibleCount = (recipients ?? []).filter((r) => r.isValidPhone && !r.isDuplicate).length;
@@ -198,7 +186,6 @@ function RecipientsStep({ campaignId, onNext }: { campaignId: string; onNext: ()
       filter: {
         district: district || undefined,
         constituency: constituency || undefined,
-        mandal: mandal || undefined,
         booth: booth || undefined,
       },
     });
@@ -209,7 +196,7 @@ function RecipientsStep({ campaignId, onNext }: { campaignId: string; onNext: ()
     updateSelection.mutate({ selected: !r.selected, recipientIds: [r.id] });
   };
 
-  const hasFilter = Boolean(district || constituency || mandal || booth);
+  const hasFilter = Boolean(district || constituency || booth);
 
   return (
     <div className="space-y-5">
@@ -225,14 +212,13 @@ function RecipientsStep({ campaignId, onNext }: { campaignId: string; onNext: ()
           <CardTitle>Filter by Area</CardTitle>
         </CardHeader>
         <CardContent className="space-y-3">
-          <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
+          <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
             <select
               className="rounded-md border border-slate-300 px-3 py-2 text-sm"
               value={district}
               onChange={(e) => {
                 setDistrict(e.target.value);
                 setConstituency("");
-                setMandal("");
                 setBooth("");
               }}
             >
@@ -248,7 +234,6 @@ function RecipientsStep({ campaignId, onNext }: { campaignId: string; onNext: ()
               value={constituency}
               onChange={(e) => {
                 setConstituency(e.target.value);
-                setMandal("");
                 setBooth("");
               }}
             >
@@ -261,25 +246,10 @@ function RecipientsStep({ campaignId, onNext }: { campaignId: string; onNext: ()
             </select>
             <select
               className="rounded-md border border-slate-300 px-3 py-2 text-sm"
-              value={mandal}
-              onChange={(e) => {
-                setMandal(e.target.value);
-                setBooth("");
-              }}
-            >
-              <option value="">All Mandals</option>
-              {mandals.map((m) => (
-                <option key={m} value={m}>
-                  {m}
-                </option>
-              ))}
-            </select>
-            <select
-              className="rounded-md border border-slate-300 px-3 py-2 text-sm"
               value={booth}
               onChange={(e) => setBooth(e.target.value)}
             >
-              <option value="">All Booths</option>
+              <option value="">All Polling Stations</option>
               {booths.map((b) => (
                 <option key={b} value={b}>
                   {b}
@@ -328,8 +298,8 @@ function RecipientsStep({ campaignId, onNext }: { campaignId: string; onNext: ()
                 <th className="px-5 py-2">Name</th>
                 <th className="px-5 py-2">Phone</th>
                 <th className="px-5 py-2">District</th>
-                <th className="px-5 py-2">Mandal</th>
-                <th className="px-5 py-2">Booth</th>
+                <th className="px-5 py-2">Constituency</th>
+                <th className="px-5 py-2">Polling Station</th>
                 <th className="px-5 py-2">Validity</th>
               </tr>
             </thead>
@@ -347,7 +317,7 @@ function RecipientsStep({ campaignId, onNext }: { campaignId: string; onNext: ()
                   <td className="px-5 py-2 text-slate-800">{r.name || "—"}</td>
                   <td className="px-5 py-2 text-slate-600">{r.phone || r.rawPhone}</td>
                   <td className="px-5 py-2 text-slate-600">{r.districtName || "—"}</td>
-                  <td className="px-5 py-2 text-slate-600">{r.mandalName || "—"}</td>
+                  <td className="px-5 py-2 text-slate-600">{r.constituencyName || "—"}</td>
                   <td className="px-5 py-2 text-slate-600">{r.boothName || "—"}</td>
                   <td className="px-5 py-2">
                     {!r.isValidPhone ? (

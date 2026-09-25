@@ -30,19 +30,17 @@ export class EventsService {
     return "ONGOING";
   }
 
-  /** Walks a region's parent chain to find its District/Constituency/Mandal/Booth ancestors (or itself). */
+  /** Walks a region's parent chain to find its District/Constituency/Polling Station ancestors (or itself). */
   private resolveHierarchyLabels(regionId: string | null | undefined, regionById: Map<string, RegionNode>) {
-    const labels: { district: string | null; constituency: string | null; mandal: string | null; booth: string | null } = {
+    const labels: { district: string | null; constituency: string | null; booth: string | null } = {
       district: null,
       constituency: null,
-      mandal: null,
       booth: null,
     };
     let current = regionId ? regionById.get(regionId) : undefined;
     while (current) {
       if (current.type === "DISTRICT") labels.district = current.name;
       else if (current.type === "CONSTITUENCY") labels.constituency = current.name;
-      else if (current.type === "MANDAL") labels.mandal = current.name;
       else if (current.type === "BOOTH") labels.booth = current.name;
       current = current.parentId ? regionById.get(current.parentId) : undefined;
     }
@@ -172,7 +170,7 @@ export class EventsService {
       organizer: event.organizer,
       district: labels.district,
       constituency: labels.constituency,
-      mandal: labels.mandal,
+      pollingStation: labels.booth,
       expectedAttendees: event.expectedAttendees,
       assignedMembers: event.participants.map((p) => ({
         id: p.user.id,
@@ -224,19 +222,19 @@ export class EventsService {
     const regionById = await this.allRegionsById();
 
     const districtMap = new Map<string, { invited: number; attended: number }>();
-    const mandalMap = new Map<string, { invited: number; attended: number }>();
+    const constituencyMap = new Map<string, { invited: number; attended: number }>();
     for (const p of participants) {
       const labels = this.resolveHierarchyLabels(p.user.regionId, regionById);
       const dKey = labels.district ?? "Unknown";
-      const mKey = labels.mandal ?? "Unknown";
+      const mKey = labels.constituency ?? "Unknown";
       const dEntry = districtMap.get(dKey) ?? { invited: 0, attended: 0 };
       dEntry.invited += 1;
       if (p.attended) dEntry.attended += 1;
       districtMap.set(dKey, dEntry);
-      const mEntry = mandalMap.get(mKey) ?? { invited: 0, attended: 0 };
+      const mEntry = constituencyMap.get(mKey) ?? { invited: 0, attended: 0 };
       mEntry.invited += 1;
       if (p.attended) mEntry.attended += 1;
-      mandalMap.set(mKey, mEntry);
+      constituencyMap.set(mKey, mEntry);
     }
     const districtWise = Array.from(districtMap.entries()).map(([district, v]) => ({
       district,
@@ -244,8 +242,8 @@ export class EventsService {
       attended: v.attended,
       attendancePct: v.invited > 0 ? Math.round((v.attended / v.invited) * 100) : 0,
     }));
-    const mandalWise = Array.from(mandalMap.entries()).map(([mandal, v]) => ({
-      mandal,
+    const constituencyWise = Array.from(constituencyMap.entries()).map(([constituency, v]) => ({
+      constituency,
       invited: v.invited,
       attended: v.attended,
       attendancePct: v.invited > 0 ? Math.round((v.attended / v.invited) * 100) : 0,
@@ -287,7 +285,7 @@ export class EventsService {
         lateArrivals,
       },
       districtWise,
-      mandalWise,
+      constituencyWise,
       memberWise,
       attendanceTrend,
     };

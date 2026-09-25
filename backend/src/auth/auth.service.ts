@@ -48,6 +48,13 @@ export class AuthService {
       throw new UnauthorizedException("Invalid credentials");
     }
 
+    // Recorded after the password check, so a failed attempt never looks
+    // like a sign-in. Fire-and-forget: a write failure here must not cost
+    // someone their login.
+    this.prisma.user
+      .update({ where: { id: user.id }, data: { lastLoginAt: new Date() } })
+      .catch(() => undefined);
+
     const payload: JwtPayload = { sub: user.id, role: user.role, regionId: user.regionId };
 
     const accessToken = await this.jwt.signAsync(payload, {

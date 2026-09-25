@@ -148,8 +148,8 @@ export default function EventDetailPage() {
             <CardContent className="grid grid-cols-1 gap-4 sm:grid-cols-2">
               <Field label="Location" value={event.location} />
               <Field label="District" value={event.district} />
-              <Field label="Constituency" value={event.constituency} />
-              <Field label="Mandal" value={event.mandal} />
+              <Field label="Assembly Constituency" value={event.constituency} />
+              <Field label="Polling Station" value={event.pollingStation} />
             </CardContent>
           </Card>
 

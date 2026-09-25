@@ -110,24 +110,37 @@ export class TasksController {
     return this.tasksService.listPendingAllocation(user);
   }
 
+  // Every role may list tasks, but the service scopes the result to the
+  // caller — the query filters can only narrow it, never widen it.
   @Get()
+  @Roles("SUPER_ADMIN", "ADMIN", "CADRE")
   findMany(
+    @CurrentUser() user: AuthenticatedUser,
     @Query("assignedToId") assignedToId?: string,
     @Query("status") status?: TaskStatus,
     @Query("campaignId") campaignId?: string,
   ) {
-    return this.tasksService.findMany({ assignedToId, status, campaignId });
+    return this.tasksService.findMany({ assignedToId, status, campaignId }, user);
   }
 
   @Get(":id")
-  findById(@Param("id") id: string) {
-    return this.tasksService.findById(id);
+  @Roles("SUPER_ADMIN", "ADMIN", "CADRE")
+  findById(@Param("id") id: string, @CurrentUser() user: AuthenticatedUser) {
+    return this.tasksService.findById(id, user);
   }
 
   @Get(":id/detail")
   @Roles("SUPER_ADMIN", "ADMIN")
   getTaskDetail(@Param("id") id: string, @CurrentUser() user: AuthenticatedUser) {
     return this.tasksService.getTaskDetail(id, user);
+  }
+
+  // Who this task was allocated to, one row per Cadre. A Cadre may call it
+  // too — the service returns only their own row.
+  @Get(":id/allocations")
+  @Roles("SUPER_ADMIN", "ADMIN", "CADRE")
+  getAllocations(@Param("id") id: string, @CurrentUser() user: AuthenticatedUser) {
+    return this.tasksService.allocations(id, user);
   }
 
   @Get(":id/dashboard")
@@ -159,7 +172,7 @@ export class TasksController {
   }
 
   @Post(":id/allocate")
-  @Roles("ADMIN")
+  @Roles("SUPER_ADMIN", "ADMIN")
   allocateToCadres(
     @Param("id") id: string,
     @Body(new ZodValidationPipe(allocateTaskSchema)) dto: AllocateTaskDto,
@@ -194,8 +207,13 @@ export class TasksController {
   }
 
   @Patch(":id")
-  update(@Param("id") id: string, @Body(new ZodValidationPipe(updateTaskSchema)) dto: UpdateTaskDto) {
-    return this.tasksService.update(id, dto);
+  @Roles("SUPER_ADMIN", "ADMIN")
+  update(
+    @Param("id") id: string,
+    @Body(new ZodValidationPipe(updateTaskSchema)) dto: UpdateTaskDto,
+    @CurrentUser() user: AuthenticatedUser,
+  ) {
+    return this.tasksService.update(id, dto, user);
   }
 
   @Patch(":id/acknowledge")

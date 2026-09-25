@@ -27,16 +27,24 @@ export interface CreateUserInput {
   parentUserId?: string;
 }
 
+// Everything safe to return about a user — deliberately never passwordHash.
+// email/lastLoginAt/parent are here for the Admin Profile view; `parent` is
+// resolved to a name because "Created by cmsh4vg..." tells a reader nothing.
 const SELECT_SAFE_FIELDS = {
   id: true,
   name: true,
+  email: true,
   phone: true,
   role: true,
+  gender: true,
+  profilePicture: true,
   regionId: true,
-  region: { select: { name: true, type: true } },
+  region: { select: { id: true, name: true, type: true } },
   parentUserId: true,
+  parent: { select: { id: true, name: true, role: true } },
   isActive: true,
   createdAt: true,
+  lastLoginAt: true,
 } as const;
 
 @Injectable()
@@ -100,6 +108,28 @@ export class UsersService {
     const user = await this.prisma.user.findUnique({ where: { id }, select: SELECT_SAFE_FIELDS });
     if (!user) throw new NotFoundException("User not found");
     return user;
+  }
+
+  /**
+   * findById scoped to the requester, mirroring findAll's rules: a Super
+   * Admin sees anyone, an Admin only users inside their own area, and
+   * everyone can see themself.
+   *
+   * The unscoped version stayed reachable over HTTP, which handed any
+   * authenticated user the name, phone number, role and area of every other
+   * user — the list endpoint's careful scoping was simply bypassable by id.
+   */
+  async findByIdVisibleTo(id: string, requester: AuthenticatedUser) {
+    const user = await this.findById(id);
+    if (requester.role === "SUPER_ADMIN" || id === requester.id) return user;
+
+    if (requester.role === "ADMIN") {
+      const regionIds = await this.regionsService.descendantIds(requester.regionId);
+      if (regionIds.includes(user.regionId)) return user;
+    }
+    // "Not found" rather than "forbidden": a 403 would confirm the id maps to
+    // a real person.
+    throw new NotFoundException("User not found");
   }
 
   /** Super Admin sees everyone; Admin sees users in their own area; Cadre sees only themself. */

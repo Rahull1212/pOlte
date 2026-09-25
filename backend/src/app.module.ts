@@ -1,5 +1,6 @@
 import { Module } from "@nestjs/common";
 import { ConfigModule } from "@nestjs/config";
+import { ThrottlerGuard, ThrottlerModule } from "@nestjs/throttler";
 import { APP_GUARD, APP_INTERCEPTOR } from "@nestjs/core";
 import { PrismaModule } from "./prisma/prisma.module";
 import { AuthModule } from "./auth/auth.module";
@@ -22,14 +23,18 @@ import { WhatsAppModule } from "./whatsapp/whatsapp.module";
 import { AuditModule } from "./audit/audit.module";
 import { BulkMessagingModule } from "./bulk-messaging/bulk-messaging.module";
 import { FyxoAgentModule } from "./fyxo-agent/fyxo-agent.module";
-import { GoogleSheetsModule } from "./google-sheets/google-sheets.module";
 import { MessageTemplatesModule } from "./message-templates/message-templates.module";
+import { MessageLogModule } from "./message-log/message-log.module";
 import { JwtAuthGuard } from "./common/guards/jwt-auth.guard";
 import { AuditLogInterceptor } from "./common/interceptors/audit-log.interceptor";
 
 @Module({
   imports: [
     ConfigModule.forRoot({ isGlobal: true }),
+    // A floor under every endpoint. Credential routes get much tighter
+    // per-route limits on top (see AuthController) — this default only
+    // stops a single client hammering the API generally.
+    ThrottlerModule.forRoot([{ name: "default", ttl: 60_000, limit: 120 }]),
     PrismaModule,
     AuthModule,
     UsersModule,
@@ -51,10 +56,13 @@ import { AuditLogInterceptor } from "./common/interceptors/audit-log.interceptor
     AuditModule,
     BulkMessagingModule,
     FyxoAgentModule,
-    GoogleSheetsModule,
     MessageTemplatesModule,
+    MessageLogModule,
   ],
   providers: [
+    // Order matters: throttling runs before authentication, so an
+    // unauthenticated flood is rejected without touching the database.
+    { provide: APP_GUARD, useClass: ThrottlerGuard },
     { provide: APP_GUARD, useClass: JwtAuthGuard },
     { provide: APP_INTERCEPTOR, useClass: AuditLogInterceptor },
   ],

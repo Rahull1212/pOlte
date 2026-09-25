@@ -1,5 +1,6 @@
 import { BadRequestException, Body, Controller, Get, Patch, Post, UploadedFile, UseInterceptors } from "@nestjs/common";
 import { FileInterceptor } from "@nestjs/platform-express";
+import { Throttle } from "@nestjs/throttler";
 import { randomUUID } from "node:crypto";
 import { mkdir, writeFile } from "node:fs/promises";
 import { join } from "node:path";
@@ -17,8 +18,7 @@ import {
   ResetPasswordDto,
   resetPasswordSchema,
   UpdateProfileDto,
-  updateProfileSchema,
-} from "../shared-types";
+  updateProfileSchema, refreshTokenSchema, RefreshTokenDto } from "../shared-types";
 import { AuthService } from "./auth.service";
 import { Public } from "../common/decorators/public.decorator";
 import { ZodValidationPipe } from "../common/pipes/zod-validation.pipe";
@@ -34,15 +34,19 @@ export class AuthController {
   constructor(private readonly authService: AuthService) {}
 
   @Public()
+  // Password guessing. 5/min per IP still lets a real person mistype a few times.
+  @Throttle({ default: { limit: 5, ttl: 60_000 } })
   @Post("login")
   login(@Body(new ZodValidationPipe(loginSchema)) dto: LoginDto) {
     return this.authService.login(dto);
   }
 
   @Public()
+  // Generous — legitimate clients refresh on a timer — but bounded.
+  @Throttle({ default: { limit: 20, ttl: 60_000 } })
   @Post("refresh")
-  refresh(@Body("refreshToken") refreshToken: string) {
-    return this.authService.refresh(refreshToken);
+  refresh(@Body(new ZodValidationPipe(refreshTokenSchema)) body: RefreshTokenDto) {
+    return this.authService.refresh(body.refreshToken);
   }
 
   // Fetches the current profile fresh from the DB (email/gender/profile
@@ -61,6 +65,8 @@ export class AuthController {
     return this.authService.updateProfile(user.id, dto);
   }
 
+  // Verifies the current password, so it is a guessing surface too.
+  @Throttle({ default: { limit: 5, ttl: 300_000 } })
   @Post("change-password")
   changePassword(
     @Body(new ZodValidationPipe(changePasswordSchema)) dto: ChangePasswordDto,
@@ -69,6 +75,8 @@ export class AuthController {
     return this.authService.changePassword(user.id, dto);
   }
 
+  // Sends an SMS and checks a password.
+  @Throttle({ default: { limit: 3, ttl: 300_000 } })
   @Post("phone-change/request")
   requestPhoneChange(
     @Body(new ZodValidationPipe(requestPhoneChangeSchema)) dto: RequestPhoneChangeDto,
@@ -77,6 +85,8 @@ export class AuthController {
     return this.authService.requestPhoneChange(user.id, dto);
   }
 
+  // Checks a 6-digit OTP.
+  @Throttle({ default: { limit: 5, ttl: 300_000 } })
   @Post("phone-change/confirm")
   confirmPhoneChange(
     @Body(new ZodValidationPipe(confirmPhoneChangeSchema)) dto: ConfirmPhoneChangeDto,
@@ -86,12 +96,16 @@ export class AuthController {
   }
 
   @Public()
+  // Each call sends an SMS to the given number — rate-limited to stop both OTP guessing and using us as an SMS cannon.
+  @Throttle({ default: { limit: 3, ttl: 300_000 } })
   @Post("forgot-password")
   forgotPassword(@Body(new ZodValidationPipe(forgotPasswordSchema)) dto: ForgotPasswordDto) {
     return this.authService.forgotPassword(dto);
   }
 
   @Public()
+  // A 6-digit OTP is only 10^6 wide; unlimited attempts make it guessable in minutes.
+  @Throttle({ default: { limit: 5, ttl: 300_000 } })
   @Post("reset-password")
   resetPassword(@Body(new ZodValidationPipe(resetPasswordSchema)) dto: ResetPasswordDto) {
     return this.authService.resetPassword(dto);

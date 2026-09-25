@@ -10,7 +10,7 @@ import { AuthenticatedUser } from "../auth/types";
 // Task Communication & AI Insights dashboard — GLOBAL, never a single task
 // (see /tasks/:id/dashboard for that). SUPER_ADMIN sees the whole org,
 // ADMIN sees only their own region subtree (enforced in
-// TaskAnalyticsService, not just by hiding routes here) — a District/Mandal
+// TaskAnalyticsService, not just by hiding routes here) — a District/Constituency
 // filter can only narrow that further, never escape it.
 @Controller("task-analytics")
 @UseGuards(RolesGuard)
@@ -23,7 +23,7 @@ export class TaskAnalyticsController {
       dateFrom: query.dateFrom || undefined,
       dateTo: query.dateTo || undefined,
       districtId: query.districtId || undefined,
-      mandalId: query.mandalId || undefined,
+      constituencyId: query.constituencyId || undefined,
       status: query.status || undefined,
       priority: query.priority || undefined,
       taskType: query.taskType === "BULK" || query.taskType === "INDIVIDUAL" ? query.taskType : undefined,
@@ -55,9 +55,9 @@ export class TaskAnalyticsController {
     return this.taskAnalyticsService.getCadreAnalytics(user, this.filtersFrom(query));
   }
 
-  @Get("mandals")
-  mandals(@CurrentUser() user: AuthenticatedUser, @Query() query: Record<string, string>) {
-    return this.taskAnalyticsService.getMandalAnalytics(user, this.filtersFrom(query));
+  @Get("constituencies")
+  constituencies(@CurrentUser() user: AuthenticatedUser, @Query() query: Record<string, string>) {
+    return this.taskAnalyticsService.getConstituencyAnalytics(user, this.filtersFrom(query));
   }
 
   @Get("districts")

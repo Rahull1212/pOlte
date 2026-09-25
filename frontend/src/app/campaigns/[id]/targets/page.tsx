@@ -25,7 +25,7 @@ export default function CampaignTargetsPage() {
 
       <Card>
         <CardHeader>
-          <CardTitle>State → District → Mandal → Booth</CardTitle>
+          <CardTitle>State → District → Constituency → Booth</CardTitle>
         </CardHeader>
         <CardContent>
           <AllocationTree nodes={tree ?? []} />

@@ -1,16 +1,23 @@
 "use client";
 
-import { useMemo, useState } from "react";
-import { useRouter } from "next/navigation";
+import { Suspense, useMemo, useState } from "react";
+import { useRouter, useSearchParams } from "next/navigation";
 import { AppShell } from "@/components/app-shell";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input, Label, Textarea } from "@/components/ui/input";
 import { Button } from "@/components/ui/button";
-import { RegionMultiSelect, isRegionWithinScope } from "@/components/region-multi-select";
-import { useCreateTaskBatch, useUploadTaskAttachments } from "@/hooks/use-tasks";
-import { useCampaigns } from "@/hooks/use-campaigns";
+import { TaskTemplatePicker } from "@/components/tasks/task-template-picker";
+import {
+  OfficialLocationPicker,
+  OfficialLocation,
+  EMPTY_OFFICIAL_LOCATION,
+  deepestSelectedId,
+  officialLocationError,
+} from "@/components/official-location-picker";
 import { useRegions } from "@/hooks/use-regions";
-import { useCurrentUser } from "@/hooks/use-auth";
+import { useCreateTaskBatch, useUploadTaskAttachments, useAllocateNewTask } from "@/hooks/use-tasks";
+import { useCampaigns } from "@/hooks/use-campaigns";
+import { useManagedUsers } from "@/hooks/use-users";
 import { TaskPriority } from "@/lib/shared-types";
 
 const PRIORITY_LABELS: Record<TaskPriority, string> = {
@@ -20,62 +27,76 @@ const PRIORITY_LABELS: Record<TaskPriority, string> = {
   URGENT: "Urgent",
 };
 
+// useSearchParams() opts a page out of static generation unless it sits
+// inside a Suspense boundary — `next build` fails without this wrapper.
 export default function CreateTaskPage() {
+  return (
+    <Suspense fallback={null}>
+      <CreateTaskPageContent />
+    </Suspense>
+  );
+}
+
+function CreateTaskPageContent() {
   const router = useRouter();
-  const { data: currentUser } = useCurrentUser();
   const { data: campaigns } = useCampaigns();
+  // Cached by the same query the picker uses — no extra request.
   const { data: regions } = useRegions();
   const createBatch = useCreateTaskBatch();
+  const allocate = useAllocateNewTask();
   const uploadAttachments = useUploadTaskAttachments();
+  // Only fetched when it's actually needed — the routed path never shows
+  // a Cadre list.
+  const { data: cadres } = useManagedUsers("CADRE");
 
   const [name, setName] = useState("");
-  const [districtIds, setDistrictIds] = useState<string[]>([]);
-  const [mandalIds, setMandalIds] = useState<string[]>([]);
-  const [boothIds, setBoothIds] = useState<string[]>([]);
   const [objective, setObjective] = useState("");
   const [description, setDescription] = useState("");
   const [deadline, setDeadline] = useState("");
   const [priority, setPriority] = useState<TaskPriority>("MEDIUM");
   const [remarks, setRemarks] = useState("");
-  const [additionalDetails, setAdditionalDetails] = useState("");
-  const [campaignId, setCampaignId] = useState("");
+  // Pre-selected when arriving from a campaign page ("+ Create Task" there),
+  // so an Admin filing work under a campaign doesn't have to find it again
+  // in a dropdown — and can't pick the wrong one by accident.
+  const presetCampaignId = useSearchParams().get("campaignId") ?? "";
+  const [campaignId, setCampaignId] = useState(presetCampaignId);
+  const [location, setLocation] = useState<OfficialLocation>(EMPTY_OFFICIAL_LOCATION);
+  // Either route the task to the Admins covering the target area(s) for
+  // them to allocate, or hand it straight to named Cadres — the second is
+  // create-then-allocate in one submit, so the Cadres get their WhatsApp
+  // message without a second screen.
+  const [assignMode, setAssignMode] = useState<"ROUTE" | "DIRECT">("ROUTE");
+  const [cadreIds, setCadreIds] = useState<string[]>([]);
+  const [cadreSearch, setCadreSearch] = useState("");
   const [files, setFiles] = useState<File[]>([]);
-  const [result, setResult] = useState<{ id: string; name: string } | null>(null);
+  const [result, setResult] = useState<{ id: string; name: string; sentTo: number } | null>(null);
   const [formError, setFormError] = useState<string | null>(null);
+  const [isAssigning, setIsAssigning] = useState(false);
 
-  // An Admin manages exactly one area (their own regionId) — the District/
-  // Mandal/Booth drill-down exists so a Super Admin can route a task to
-  // areas they don't personally sit in, which doesn't apply to an Admin.
-  const isAdmin = currentUser?.role === "ADMIN";
-  const regionIds = isAdmin ? (currentUser?.regionId ? [currentUser.regionId] : []) : [...districtIds, ...mandalIds, ...boothIds];
+  // The official location IS the task's area — how deep you went is the
+  // targeting decision, so there is nothing else to pick. Stopping at a
+  // District routes the task to every Admin covering it; going down to a
+  // Polling Station routes it to that station's Admin alone.
+  const targetRegionId = deepestSelectedId(location);
+  const regionIds = targetRegionId ? [targetRegionId] : [];
 
-  const byId = useMemo(() => new Map((regions ?? []).map((r) => [r.id, r])), [regions]);
+  const visibleCadres = useMemo(() => {
+    const q = cadreSearch.trim().toLowerCase();
+    return (cadres ?? [])
+      .filter((c) => c.isActive)
+      .filter((c) => !q || c.name.toLowerCase().includes(q) || c.phone.includes(q));
+  }, [cadres, cadreSearch]);
 
-  // District -> Mandal -> Booth is a strict dependent hierarchy: narrowing or
-  // clearing a parent selection must drop any child selections that no
-  // longer belong to it, otherwise a stale Mandal/Booth from a deselected
-  // District could stay checked even though it's no longer shown.
-  const handleDistrictChange = (ids: string[]) => {
-    setDistrictIds(ids);
-    const districtSet = new Set(ids);
-    const nextMandalIds = mandalIds.filter((id) => isRegionWithinScope(id, districtSet, byId));
-    setMandalIds(nextMandalIds);
-    const mandalSet = new Set(nextMandalIds);
-    setBoothIds((prev) => prev.filter((id) => isRegionWithinScope(id, mandalSet, byId)));
-  };
-
-  const handleMandalChange = (ids: string[]) => {
-    setMandalIds(ids);
-    const mandalSet = new Set(ids);
-    setBoothIds((prev) => prev.filter((id) => isRegionWithinScope(id, mandalSet, byId)));
-  };
+  const toggleCadre = (id: string) =>
+    setCadreIds((current) => (current.includes(id) ? current.filter((c) => c !== id) : [...current, id]));
 
   const onSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     setFormError(null);
 
-    if (regionIds.length === 0) {
-      setFormError(isAdmin ? "Your account has no area assigned — contact your Super Admin." : "Select at least one District, Mandal, or Booth.");
+    const locationError = officialLocationError(location, regions);
+    if (locationError) {
+      setFormError(locationError);
       return;
     }
 
@@ -90,23 +111,45 @@ export default function CreateTaskPage() {
       }
     }
 
-    createBatch.mutate(
-      {
+    if (assignMode === "DIRECT" && cadreIds.length === 0) {
+      setFormError("Select at least one Cadre to assign this task to.");
+      return;
+    }
+
+    setIsAssigning(true);
+    try {
+      const created = await createBatch.mutateAsync({
         name,
         objective: objective || undefined,
         description: description || undefined,
-        additionalDetails: additionalDetails || undefined,
         remarks: remarks || undefined,
         deadline: new Date(deadline),
         priority,
         campaignId: campaignId || undefined,
+        pollingStationId: location.pollingStationId || undefined,
         regionIds,
         attachmentUrls,
-      },
-      {
-        onSuccess: (res) => setResult({ id: res.batch.id, name: res.batch.name }),
-      },
-    );
+      });
+
+      if (assignMode === "ROUTE") {
+        setResult({ id: created.batch.id, name: created.batch.name, sentTo: 0 });
+        return;
+      }
+
+      // The task record exists at this point either way. If allocation
+      // fails, say so plainly and send them to the allocate screen rather
+      // than implying nothing was created.
+      const allocated = await allocate.mutateAsync({
+        id: created.batch.id,
+        regionIds: [],
+        cadreIds,
+      });
+      setResult({ id: created.batch.id, name: created.batch.name, sentTo: allocated.cadreCount ?? cadreIds.length });
+    } catch (err) {
+      setFormError(err instanceof Error ? err.message : "Could not create the task");
+    } finally {
+      setIsAssigning(false);
+    }
   };
 
   if (result) {
@@ -114,15 +157,23 @@ export default function CreateTaskPage() {
       <AppShell>
         <Card className="mx-auto max-w-lg">
           <CardContent className="py-8 text-center">
-            <p className="text-lg font-semibold text-slate-900">Task created</p>
+            <p className="text-lg font-semibold text-slate-900">
+              {result.sentTo > 0 ? "Task assigned" : "Task created"}
+            </p>
             <p className="mt-2 text-sm text-slate-600">
-              "{result.name}" has been created. Nothing has been sent yet — allocate it to your Cadres next to
-              actually send it out over WhatsApp.
+              {result.sentTo > 0
+                ? `"${result.name}" was assigned to ${result.sentTo} Cadre${result.sentTo === 1 ? "" : "s"} and their WhatsApp message has gone out.`
+                : `"${result.name}" has been created. Nothing has been sent yet — allocate it to your Cadres next to actually send it out over WhatsApp.`}
             </p>
             <div className="mt-6 flex justify-center gap-2">
-              <Button onClick={() => router.push(`/tasks/${result.id}/allocate`)}>Allocate to Cadres</Button>
-              <Button variant="secondary" onClick={() => router.push("/tasks")}>
-                Go to Tasks
+              {result.sentTo === 0 && (
+                <Button onClick={() => router.push(`/tasks/${result.id}/allocate`)}>Allocate to Cadres</Button>
+              )}
+              <Button
+                variant={result.sentTo > 0 ? undefined : "secondary"}
+                onClick={() => router.push(result.sentTo > 0 ? `/tasks/${result.id}` : "/tasks")}
+              >
+                {result.sentTo > 0 ? "View Task" : "Go to Tasks"}
               </Button>
             </div>
           </CardContent>
@@ -146,41 +197,7 @@ export default function CreateTaskPage() {
               <Input id="name" required value={name} onChange={(e) => setName(e.target.value)} />
             </div>
 
-            {!isAdmin && (
-              <div className="grid grid-cols-1 gap-4 sm:grid-cols-3">
-                <div>
-                  <Label>Select District(s)</Label>
-                  <RegionMultiSelect type="DISTRICT" selected={districtIds} onChange={handleDistrictChange} label="districts" />
-                </div>
-                <div>
-                  <Label>Select Mandal(s) — optional</Label>
-                  <RegionMultiSelect
-                    type="MANDAL"
-                    selected={mandalIds}
-                    onChange={handleMandalChange}
-                    label="mandals"
-                    scopeIds={districtIds}
-                    scopeLabel="a district"
-                  />
-                </div>
-                <div>
-                  <Label>Select Village / Booth — optional</Label>
-                  <RegionMultiSelect
-                    type="BOOTH"
-                    selected={boothIds}
-                    onChange={setBoothIds}
-                    label="booths"
-                    scopeIds={mandalIds}
-                    scopeLabel="a mandal"
-                  />
-                </div>
-              </div>
-            )}
-            <p className="text-xs text-slate-500">
-              {isAdmin
-                ? "This creates the task record only — nothing is sent yet. You'll choose which Cadres to send it to on the next screen."
-                : `This creates the task record only — nothing is sent yet. It'll be routed to the Admins covering the selected area(s) — ${regionIds.length} area${regionIds.length === 1 ? "" : "s"} selected so far — for them to allocate to their Cadres.`}
-            </p>
+            <OfficialLocationPicker value={location} onChange={setLocation} />
 
             <div>
               <Label htmlFor="objective">Task Objective</Label>
@@ -226,15 +243,6 @@ export default function CreateTaskPage() {
             </div>
 
             <div>
-              <Label htmlFor="additionalDetails">Additional Details</Label>
-              <Textarea
-                id="additionalDetails"
-                value={additionalDetails}
-                onChange={(e) => setAdditionalDetails(e.target.value)}
-              />
-            </div>
-
-            <div>
               <Label htmlFor="campaignId">Campaign — optional</Label>
               <select
                 id="campaignId"
@@ -251,6 +259,98 @@ export default function CreateTaskPage() {
               </select>
             </div>
 
+            {/* Shown on the form that sends it, because that is where the
+                choice matters — and it is the only place an Admin can see
+                or change their template. */}
+            <TaskTemplatePicker />
+
+            <div>
+              <Label>Assign to</Label>
+              <div className="mt-1 flex flex-wrap gap-2">
+                {(["ROUTE", "DIRECT"] as const).map((mode) => (
+                  <button
+                    key={mode}
+                    type="button"
+                    onClick={() => setAssignMode(mode)}
+                    className={`rounded-full px-3 py-1 text-xs ${
+                      assignMode === mode ? "bg-brand-600 text-white" : "bg-slate-100 text-slate-600"
+                    }`}
+                  >
+                    {mode === "ROUTE" ? "Route to Admins for allocation" : "Assign directly to Cadres"}
+                  </button>
+                ))}
+              </div>
+              <p className="mt-2 text-xs text-slate-500">
+                {assignMode === "ROUTE"
+                  ? "Nothing is sent yet — the task goes to the Admins covering the official location you chose, for them to allocate to their Cadres."
+                  : "The Cadres you pick below are assigned the task immediately and receive their WhatsApp message on submit."}
+              </p>
+            </div>
+
+            {assignMode === "DIRECT" && (
+              <div>
+                <div className="flex flex-wrap items-center justify-between gap-2">
+                  <Label htmlFor="cadre-search">Cadres</Label>
+                  {/* Acts on what is currently VISIBLE, not on every Cadre:
+                      with a search typed, "Select all 3" selecting fifty
+                      people would be the opposite of what it says. Selections
+                      made under a previous search are kept. */}
+                  {visibleCadres.length > 0 && (
+                    <button
+                      type="button"
+                      onClick={() =>
+                        setCadreIds((current) => {
+                          const visibleIds = visibleCadres.map((c) => c.id);
+                          const allVisibleSelected = visibleIds.every((id) => current.includes(id));
+                          return allVisibleSelected
+                            ? current.filter((id) => !visibleIds.includes(id))
+                            : [...new Set([...current, ...visibleIds])];
+                        })
+                      }
+                      className="text-xs font-medium text-brand-600 hover:underline"
+                    >
+                      {visibleCadres.every((c) => cadreIds.includes(c.id))
+                        ? "Clear all"
+                        : `Select all ${visibleCadres.length}`}
+                    </button>
+                  )}
+                </div>
+                <Input
+                  id="cadre-search"
+                  placeholder="Search by name or phone…"
+                  value={cadreSearch}
+                  onChange={(e) => setCadreSearch(e.target.value)}
+                />
+                <div className="mt-2 max-h-56 space-y-1 overflow-y-auto rounded-md border border-slate-200 p-2">
+                  {visibleCadres.length === 0 && (
+                    <p className="px-1 py-3 text-center text-xs text-slate-400">
+                      {cadreSearch ? "No Cadres match that search." : "No active Cadres in your area."}
+                    </p>
+                  )}
+                  {visibleCadres.map((cadre) => (
+                    <label
+                      key={cadre.id}
+                      className="flex cursor-pointer items-center gap-2 rounded px-1 py-1 text-sm hover:bg-slate-50"
+                    >
+                      <input
+                        type="checkbox"
+                        checked={cadreIds.includes(cadre.id)}
+                        onChange={() => toggleCadre(cadre.id)}
+                      />
+                      <span className="text-slate-800">{cadre.name}</span>
+                      <span className="text-xs text-slate-400">{cadre.phone}</span>
+                      {cadre.region && <span className="text-xs text-slate-400">· {cadre.region.name}</span>}
+                    </label>
+                  ))}
+                </div>
+                {cadreIds.length > 0 && (
+                  <p className="mt-1 text-xs text-slate-500">
+                    {cadreIds.length} of {(cadres ?? []).filter((c) => c.isActive).length} Cadres selected
+                  </p>
+                )}
+              </div>
+            )}
+
             <div>
               <Label htmlFor="attachments">Attachments — optional</Label>
               <input
@@ -264,20 +364,18 @@ export default function CreateTaskPage() {
               {files.length > 0 && <p className="mt-1 text-xs text-slate-500">{files.length} file(s) selected</p>}
             </div>
 
-            {(formError || createBatch.isError) && (
-              <p className="text-xs text-red-600">{formError ?? (createBatch.error as Error)?.message}</p>
-            )}
+            {formError && <p className="text-xs text-red-600">{formError}</p>}
 
-            <Button
-              type="submit"
-              className="w-full"
-              disabled={createBatch.isPending || uploadAttachments.isPending}
-            >
+            <Button type="submit" className="w-full" disabled={isAssigning || uploadAttachments.isPending}>
               {uploadAttachments.isPending
                 ? "Uploading attachments..."
-                : createBatch.isPending
-                  ? "Creating..."
-                  : "Create Task"}
+                : isAssigning
+                  ? assignMode === "DIRECT"
+                    ? "Assigning and sending..."
+                    : "Creating..."
+                  : assignMode === "DIRECT"
+                    ? "Create & Assign to Cadres"
+                    : "Create Task"}
             </Button>
           </CardContent>
         </Card>

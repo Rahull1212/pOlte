@@ -182,18 +182,18 @@ export class AiService {
    * section — a short list of individually-categorized findings (⚠️ / 🏆 /
    * 📍 / 📱 / 💡 / 📈), each one factual sentence, over a bundle
    * TaskAnalyticsService already computed org/area-wide from real Task/
-   * WhatsApp/Cadre/Mandal/District data. The model only ever reasons over
+   * WhatsApp/Cadre/Constituency/District data. The model only ever reasons over
    * numbers already computed elsewhere — never invents them.
    */
   async generateGlobalTaskInsights(bundle: unknown): Promise<{ items: { category: string; icon: string; text: string }[] }> {
     const content = await this.callLLM(
       "You are an operations analyst for a political field-organizing platform, reviewing task allocation, " +
-        "WhatsApp communication, Cadre, and Mandal/District performance data across everything the Admin has " +
+        "WhatsApp communication, Cadre, and Constituency/District performance data across everything the Admin has " +
         "access to. Respond with 5-8 short insight lines and NOTHING else — one per line, each starting with " +
-        "exactly one tag from this list: [ATTENTION] [TOP_PERFORMANCE] [LOW_PERFORMANCE] [MANDAL] [WHATSAPP] " +
+        "exactly one tag from this list: [ATTENTION] [TOP_PERFORMANCE] [LOW_PERFORMANCE] [CONSTITUENCY] [WHATSAPP] " +
         "[TREND] [RECOMMENDATION]. After the tag, write exactly one factual sentence using only the data given, " +
         "citing real names and numbers (e.g. '[TOP_PERFORMANCE] Ganesh has the highest completion rate at 94%.'). " +
-        "Cover overall performance, top and low performers, best/worst Mandals, overdue patterns, WhatsApp " +
+        "Cover overall performance, top and low performers, best/worst Constituencies, overdue patterns, WhatsApp " +
         "delivery/response problems, and at least one concrete recommendation. Do not invent anything not present " +
         "in the data.",
       JSON.stringify(bundle),
@@ -203,7 +203,7 @@ export class AiService {
       ATTENTION: { category: "Attention Required", icon: "⚠️" },
       TOP_PERFORMANCE: { category: "Top Performance", icon: "🏆" },
       LOW_PERFORMANCE: { category: "Needs Improvement", icon: "📉" },
-      MANDAL: { category: "Mandal Insight", icon: "📍" },
+      CONSTITUENCY: { category: "Constituency Insight", icon: "📍" },
       WHATSAPP: { category: "WhatsApp Insight", icon: "📱" },
       TREND: { category: "Trend", icon: "📈" },
       RECOMMENDATION: { category: "Recommendation", icon: "💡" },
@@ -236,7 +236,7 @@ export class AiService {
   async answerTaskQuestion(question: string, bundle: unknown): Promise<string> {
     return this.callLLM(
       "You are a data analyst assistant for PoliOS, a political field-organizing platform. Answer the Admin's " +
-        "question using ONLY the task/Cadre/Mandal data provided — never invent numbers or names. If the data given " +
+        "question using ONLY the task/Cadre/Constituency data provided — never invent numbers or names. If the data given " +
         "doesn't contain what's needed to answer, say so plainly instead of guessing. Keep the answer concise " +
         "(2-5 sentences) and cite specific numbers/names from the data where relevant.",
       `Data: ${JSON.stringify(bundle)}\n\nQuestion: ${question}`,

@@ -9,7 +9,7 @@ import { RegionsModule } from "../regions/regions.module";
 import { AiModule } from "../ai/ai.module";
 import { WhatsAppApiModule } from "../whatsapp-api/whatsapp-api.module";
 import { FyxoWhatsAppModule } from "../fyxo-whatsapp/fyxo-whatsapp.module";
-import { GoogleSheetsModule } from "../google-sheets/google-sheets.module";
+import { MessageLogModule } from "../message-log/message-log.module";
 import { MessageTemplatesModule } from "../message-templates/message-templates.module";
 
 @Module({
@@ -20,7 +20,7 @@ import { MessageTemplatesModule } from "../message-templates/message-templates.m
     AiModule,
     WhatsAppApiModule,
     FyxoWhatsAppModule,
-    GoogleSheetsModule,
+    MessageLogModule,
     MessageTemplatesModule,
   ],
   controllers: [TasksController, TaskAnalyticsController],

@@ -10,17 +10,18 @@ import { useManagedUsers } from "@/hooks/use-users";
 import { useEvents } from "@/hooks/use-events";
 import { useCurrentUser } from "@/hooks/use-auth";
 import { useAnalyticsOverview } from "@/hooks/use-analytics";
+import { useDashboardSummary } from "@/hooks/use-campaigns";
 import { UpcomingEvents } from "@/components/upcoming-events";
-
-function formatCurrency(amount: number) {
-  return `₹${amount.toLocaleString("en-IN")}`;
-}
+import { CommunicationCard } from "@/components/communication-card";
 
 export function AdminDashboard() {
   const { data: currentUser } = useCurrentUser();
   const { data: cadres } = useManagedUsers("CADRE");
   const { data: events } = useEvents();
   const { data: overview } = useAnalyticsOverview();
+  // Scoped to this Admin server-side, so the count explains their own empty
+  // list rather than the organisation's.
+  const { data: campaignSummary } = useDashboardSummary();
 
   const rank = overview?.myRegionRank;
   const cadreLeaderboard = overview?.cadreLeaderboard;
@@ -42,25 +43,13 @@ export function AdminDashboard() {
           value={rank ? `#${rank.rank} of ${rank.of}` : "-"}
           sub={rank?.regionName}
         />
-        <KpiTile
-          label="Pending Expenses"
-          value={overview?.pendingExpenses.count ?? "-"}
-          sub={overview ? formatCurrency(overview.pendingExpenses.amount) : undefined}
-          href="/campaigns"
-        />
       </div>
 
-      <div className="mb-6 grid grid-cols-2 gap-4 md:grid-cols-4">
+      <div className="mb-6 grid grid-cols-2 gap-4 md:grid-cols-3">
         <KpiTile
           label="Target Achievement"
           value={overview ? `${overview.targetAchievementPct}%` : "-"}
           sub={overview ? `${overview.totalAchieved.toLocaleString()} / ${overview.totalTarget.toLocaleString()}` : undefined}
-        />
-        <KpiTile
-          label="Budget Utilization"
-          value={overview ? `${overview.budgetUtilizationPct}%` : "-"}
-          sub={overview ? formatCurrency(overview.totalSpentBudget) : undefined}
-          tone={overview && overview.budgetUtilizationPct >= 90 ? "warning" : "default"}
         />
         <KpiTile
           label="Task Completion"
@@ -82,7 +71,7 @@ export function AdminDashboard() {
             <CardTitle>My Active Campaigns</CardTitle>
           </CardHeader>
           <CardContent>
-            <CampaignProgressList campaigns={overview?.campaigns} />
+            <CampaignProgressList campaigns={overview?.campaigns} totalInScope={campaignSummary?.total} />
           </CardContent>
         </Card>
 
@@ -128,6 +117,14 @@ export function AdminDashboard() {
           </CardContent>
         </Card>
       </div>
+
+      {/* Scoped server-side to messages this Admin sent, the same rule the
+          Message Log page uses — so the two always show the same number. */}
+      {overview?.communication && (
+        <div className="mt-6">
+          <CommunicationCard stats={overview.communication} href="/message-log" />
+        </div>
+      )}
     </div>
   );
 }

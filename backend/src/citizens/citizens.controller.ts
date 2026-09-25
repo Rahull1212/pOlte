@@ -23,7 +23,7 @@ export class CitizensController {
   }
 
   @Get(":id")
-  findById(@Param("id") id: string) {
-    return this.citizensService.findById(id);
+  findById(@Param("id") id: string, @CurrentUser() user: AuthenticatedUser) {
+    return this.citizensService.findById(id, user);
   }
 }

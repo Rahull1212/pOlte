@@ -13,18 +13,22 @@ datasource db {
 
 // Three-tier role model. "Area" (which Region a SUPER_ADMIN/ADMIN manages) is
 // expressed by User.regionId, not by the role itself — an ADMIN's regionId
-// can point at a District, Constituency, Mandal, or Booth node interchangeably.
+// can point at a District, Constituency, or Polling Station node interchangeably.
 enum Role {
   SUPER_ADMIN
   ADMIN
   CADRE
 }
 
+// The Election Commission's own hierarchy, and nothing else: a State holds
+// Districts, a District holds Assembly Constituencies, and an AC holds
+// Polling Stations (BOOTH). Mandals were dropped — they are a revenue
+// administrative unit that appears nowhere in electoral rolls, so a task
+// located by Mandal could not be tied back to an official polling station.
 enum RegionType {
   STATE
   DISTRICT
   CONSTITUENCY
-  MANDAL
   BOOTH
 }
 
@@ -34,6 +38,15 @@ enum CampaignStatus {
   ACTIVE
   COMPLETED
   CANCELLED
+}
+
+// Where an Admin stands on a campaign they were assigned. A Super Admin
+// creates a campaign and hands it to Admins; until an Admin ACCEPTS, they
+// have taken on no work and may not allocate any of it to their Cadres.
+enum CampaignAssignmentStatus {
+  PENDING
+  ACCEPTED
+  DECLINED
 }
 
 enum CampaignPriority {
@@ -157,6 +170,11 @@ model User {
   children       User[]   @relation("UserHierarchy")
   isActive       Boolean  @default(true)
   createdAt      DateTime @default(now())
+  // Stamped by AuthService.login. Null means "never signed in" — which for
+  // a Cadre is normal (they live entirely in WhatsApp), but for an Admin
+  // handed a web account it is the single most useful thing on their
+  // profile: it says whether the account was ever actually picked up.
+  lastLoginAt    DateTime?
 
   // The approved WhatsApp template this user's OWN tasks go out with,
   // assigned by a Super Admin (see MessageTemplatesService). One template per
@@ -167,15 +185,32 @@ model User {
   // default "polios" template.
   //
   // PoliOS can't create or approve these — the name must already exist and
-  // be approved in Fyxo/Meta. Body is recorded only so the Google Sheet log
-  // and the UI can show what the Cadre actually reads; it is never sent.
-  // Every template here must take ONE variable, {{1}} = the Cadre's name;
-  // the assign screen warns when a synced template says otherwise.
+  // be approved in Fyxo/Meta. Body is recorded only so the message log and
+  // the UI can show what the Cadre actually reads; it is never sent.
+  // How many variables a template takes comes from the synced catalogue;
+  // what goes in each is fyxoTemplateVariables below.
   fyxoTemplateName     String?
   fyxoTemplateLanguage String?
   fyxoTemplateBody     String?
+  // What each {{n}} placeholder is filled with, in order — one token per
+  // variable the template declares (CADRE_NAME, TASK_NAME, DEADLINE,
+  // PRIORITY, ASSIGNED_BY). Chosen by the Super Admin when they assign the
+  // template, because only they know what the approved wording expects in
+  // each slot. Empty falls back to the conventional who/what/when order.
+  fyxoTemplateVariables String[]
+  // What each Quick Reply on that template replies with when a Cadre taps
+  // it: [{ label, action, text? }], one entry per button in the approved
+  // template's own order.
+  //
+  // JSON rather than a table because it is a small, always-read-together
+  // settings blob owned by exactly one user — a row per button would add a
+  // join to every send path for no query anyone runs. `action` is one of
+  // ButtonReplyAction (see shared-types); `text` carries the wording for a
+  // CUSTOM_TEXT reply.
+  fyxoTemplateButtons   Json?
 
   createdCampaigns    Campaign[]         @relation("CampaignCreator")
+  campaignsAssigned   CampaignAdmin[]    @relation("CampaignAssignedAdmin")
   allocationsGiven    TargetAllocation[] @relation("AllocationAssignedBy")
   allocationsOwned    TargetAllocation[] @relation("AllocationOwner")
   tasksAssignedTo     Task[]             @relation("TaskAssignee")
@@ -198,9 +233,9 @@ model User {
   fieldReports        FieldReport[]      @relation("FieldReportCadre")
   pollsCreated        Poll[]             @relation("PollCreator")
   pollResponses       PollRecipient[]    @relation("PollRecipientCadre")
-  sheetConnections    SheetConnection[]  @relation("SheetConnectedBy")
-  googleCredentials   GoogleServiceAccount[] @relation("GoogleCredentialUploadedBy")
-  googleOAuth         GoogleOAuthConnection[] @relation("GoogleOAuthConnectedBy")
+  messagesReceived    TaskMessageLog[]   @relation("MessageLogCadre")
+  templateResponses   TemplateResponse[] @relation("TemplateResponseCadre")
+  messagesSent        TaskMessageLog[]   @relation("MessageLogAssignedBy")
 }
 
 // Verification codes for self-service flows that need proof the caller
@@ -237,6 +272,13 @@ model WhatsAppSession {
 model Region {
   id       String     @id @default(cuid())
   name     String
+  // The official ECI number: the Assembly Constituency number for a
+  // CONSTITUENCY ("55"), the Polling Station number for a BOOTH ("142",
+  // "12A"). Free text, not an Int: real numbers carry letters and leading
+  // zeros. States and Districts have none, so it's optional — and it is
+  // unique among siblings, not globally, since every AC numbers its polling
+  // stations from 1.
+  number   String?
   type     RegionType
   parentId String?
   parent   Region?    @relation("RegionHierarchy", fields: [parentId], references: [id])
@@ -248,6 +290,8 @@ model Region {
   grievances     Grievance[]
   events         Event[]
   bulkRecipients BulkRecipient[]
+  tasks          Task[]             @relation("TaskPollingStation")
+  taskBatches    TaskBatch[]        @relation("TaskBatchPollingStation")
 }
 
 // ============================================================
@@ -265,8 +309,17 @@ model Campaign {
   priority           CampaignPriority @default(MEDIUM)
   status             CampaignStatus   @default(DRAFT)
   bannerUrl          String?
-  totalTarget        Int
-  totalBudget        Decimal          @db.Decimal(14, 2)
+  // Optional headline figures. A campaign can be created without declaring
+  // an overall target or budget — those are allocated per area on the
+  // Targets/Budget screens, which is where the numbers that matter live.
+  // Null means "none declared", and AllocationsService then applies no cap.
+  totalTarget        Int?
+  // What one unit of `totalTarget` IS — "Membership forms", "House visits".
+  // Stored on the campaign so every allocation and every progress report
+  // beneath it counts the same thing; without it a campaign could reach
+  // "500 of 500" by adding 300 house visits to 200 forms.
+  targetMetric       String?
+  totalBudget        Decimal?         @db.Decimal(14, 2)
   expectedVolunteers Int?
   requiredDocuments  String[]
   createdById        String
@@ -281,8 +334,38 @@ model Campaign {
   expenses      ExpenseRequest[]
   announcements Announcement[]
   aiInsights    AIInsight[]
+  assignedAdmins CampaignAdmin[]
 
   @@index([status, priority])
+}
+
+// Which Admins are responsible for a campaign, chosen when it's created.
+// A join table rather than a field on either side: a campaign runs across
+// several Admins' areas, and an Admin works on several campaigns at once —
+// neither direction is single-valued.
+model CampaignAdmin {
+  campaignId String
+  campaign   Campaign @relation(fields: [campaignId], references: [id], onDelete: Cascade)
+  adminId    String
+  admin      User     @relation("CampaignAssignedAdmin", fields: [adminId], references: [id], onDelete: Cascade)
+  assignedAt DateTime @default(now())
+
+  // The Admin's own answer to being given this campaign. Assignment alone
+  // isn't agreement: an Admin who hasn't accepted may look at the campaign
+  // but cannot allocate its work to their Cadres (TasksService gates on
+  // this), so nobody is quietly made responsible for a campaign they never
+  // took on.
+  status      CampaignAssignmentStatus @default(PENDING)
+  respondedAt DateTime?
+  // Why they declined, or any note on accepting. Shown to the Super Admin,
+  // who otherwise only learns that someone said no, not why.
+  responseNote String?
+
+  // One row per (campaign, admin): assigning the same Admin twice is a
+  // no-op rather than a duplicate.
+  @@id([campaignId, adminId])
+  @@index([adminId])
+  @@index([adminId, status])
 }
 
 model CampaignAttachment {
@@ -294,7 +377,7 @@ model CampaignAttachment {
   uploadedAt DateTime @default(now())
 }
 
-// Hierarchical target + budget split: State -> District -> Mandal -> Booth -> Cadre.
+// Hierarchical target + budget split: State -> District -> Constituency -> Polling Station -> Cadre.
 // Each row's parentAllocationId points to the allocation it was split from,
 // so the tree mirrors the org hierarchy exactly.
 model TargetAllocation {
@@ -334,7 +417,7 @@ model TargetAllocation {
 // ============================================================
 
 // One "Create Task" submission that fans out to every Cadre under the
-// selected District(s)/Mandal(s)/Booth(s) — one Task row per resolved
+// selected District(s)/Constituency(s)/Polling Station(s) — one Task row per resolved
 // Cadre (see TasksService.createBatch), grouped here so the Task
 // Intelligence Dashboard can show rollup stats without a single Task
 // trying to represent more than one assignee.
@@ -343,13 +426,17 @@ model TaskBatch {
   name              String
   objective         String?
   description       String?
-  additionalDetails String?
   remarks           String?
   deadline          DateTime
   priority          TaskPriority @default(MEDIUM)
   campaignId        String?
   campaign          Campaign?    @relation(fields: [campaignId], references: [id])
-  targetRegionIds   String[] // the District/Mandal/Booth selection, kept for audit/display
+  // The official ECI location this work belongs to: a BOOTH (polling
+  // station), whose ancestry gives the Assembly Constituency, District and
+  // State. Optional so a batch that spans several ACs can still be created.
+  pollingStationId  String?
+  pollingStation    Region?      @relation("TaskBatchPollingStation", fields: [pollingStationId], references: [id])
+  targetRegionIds   String[] // the District/Constituency/Polling Station selection, kept for audit/display
   attachmentUrls    String[]
   createdById       String
   createdBy         User         @relation(fields: [createdById], references: [id])
@@ -363,6 +450,8 @@ model TaskBatch {
 
   tasks      Task[]
   aiInsights AIInsight[]
+
+  @@index([pollingStationId])
 }
 
 enum WhatsappDeliveryStatus {
@@ -381,10 +470,15 @@ model Task {
   allocation        TargetAllocation?      @relation(fields: [allocationId], references: [id])
   batchId           String?
   batch             TaskBatch?             @relation(fields: [batchId], references: [id])
+  // The official ECI location this task is carried out at — a BOOTH
+  // (polling station). Its ancestry supplies the Assembly Constituency,
+  // District and State shown on the task, so those four facts can never
+  // drift out of agreement with each other.
+  pollingStationId  String?
+  pollingStation    Region?                @relation("TaskPollingStation", fields: [pollingStationId], references: [id])
   name              String
   objective         String?
   description       String?
-  additionalDetails String?
   assignedToId      String
   assignedTo        User                   @relation("TaskAssignee", fields: [assignedToId], references: [id])
   assignedById      String
@@ -440,10 +534,14 @@ model Task {
   attachments  TaskAttachment[]
   progress     ProgressUpdate[]
   fieldReports FieldReport[]
+  messageLog   TaskMessageLog[]
+  polls        Poll[]
+  responses    TemplateResponse[]
 
   @@index([assignedToId, status])
   @@index([whatsappMessageId])
   @@index([fyxoMessageId])
+  @@index([pollingStationId])
 }
 
 model TaskAttachment {
@@ -470,9 +568,20 @@ model TaskAttachment {
 model Poll {
   id                 String    @id @default(cuid())
   question           String
-  // 2-3 entries — capped by how many Quick Reply buttons a WhatsApp
-  // template can carry (see the module comment above).
+  // The answers, as the Cadre sees them. No longer typed by hand: they are
+  // the Quick Reply buttons of `templateName`, copied here at create time so
+  // a poll still reads correctly if that template is later changed or
+  // un-approved. Empty only for polls created before templates were used.
   options            String[]
+  // The approved WhatsApp template this poll is asked with. Its buttons ARE
+  // the options — WhatsApp fixes button labels at approval time, so the way
+  // to offer "Yes / No" is to pick a template whose buttons say that.
+  templateName       String?
+  templateLanguage   String?
+  // A poll can stand alone or hang off a task ("did you finish this?").
+  // Null means standalone.
+  taskId             String?
+  task               Task?     @relation(fields: [taskId], references: [id])
   targetRegionIds    String[]
   deadline           DateTime?
   createdById        String
@@ -480,7 +589,10 @@ model Poll {
   createdAt          DateTime  @default(now())
   awaitingAllocation Boolean   @default(true)
 
-  recipients PollRecipient[]
+  recipients  PollRecipient[]
+  messageLogs TaskMessageLog[]
+
+  @@index([taskId])
 }
 
 enum PollRecipientStatus {
@@ -524,6 +636,13 @@ model ProgressUpdate {
   // would misattribute who actually did the work. See UsersService.remove().
   cadreId              String?
   cadre                User?    @relation(fields: [cadreId], references: [id])
+  // How much MORE was done since the last report, in the campaign's own
+  // metric. Incremental by design: the old fields below were read as running
+  // totals, so reporting "5" then "3" produced a delta of -2 and the achieved
+  // count went backwards.
+  unitsCompleted       Int?
+  // Legacy per-activity counters, kept so existing reports still read. New
+  // reports use unitsCompleted.
   completedForms       Int?
   meetingsConducted    Int?
   houseVisits          Int?
@@ -640,7 +759,7 @@ model BulkMessageCampaign {
   @@index([status])
 }
 
-// One row per Excel row. District/Constituency/Mandal/Booth are kept as the
+// One row per Excel row. District/Constituency/Polling Station are kept as the
 // raw text from the file (source of truth for filtering — an uploaded
 // contact list won't always match Region spelling exactly) AND
 // best-effort-resolved against the real Region table into regionId, so a
@@ -654,7 +773,6 @@ model BulkRecipient {
   rawPhone          String // exactly as uploaded, for audit/debugging
   districtName      String?
   constituencyName  String?
-  mandalName        String?
   boothName         String?
   regionId          String?
   region            Region?              @relation(fields: [regionId], references: [id])
@@ -738,17 +856,26 @@ model Grievance {
   region          Region          @relation(fields: [regionId], references: [id])
   submittedById   String
   submittedBy     User            @relation("GrievanceSubmitter", fields: [submittedById], references: [id])
+  // Which role filed this, captured at submission time rather than read back
+  // off submittedBy — a Cadre later promoted to Admin must not retroactively
+  // change who is recorded as having raised the grievance.
+  submittedByRole Role
   category        String
   description     String
-  photos          String[]
+  // Evidence attached by the submitter. Was `photos`, but grievances now
+  // carry PDFs and Word documents too, so the name matches Task/TaskBatch's
+  // `attachmentUrls` rather than claiming everything is an image.
+  attachmentUrls  String[]
   status          GrievanceStatus @default(OPEN)
   resolutionNotes String?
   resolvedById    String?
   resolvedBy      User?           @relation("GrievanceResolver", fields: [resolvedById], references: [id])
   createdAt       DateTime        @default(now())
+  updatedAt       DateTime        @updatedAt
   resolvedAt      DateTime?
 
   @@index([regionId, status])
+  @@index([submittedById])
 }
 
 // ============================================================
@@ -854,6 +981,51 @@ model FieldReport {
   @@index([reviewStatus])
 }
 
+// What a Cadre did with a template we sent them — a button tap, or a reply.
+//
+// Nothing recorded an inbound response before this: a template quick-reply
+// arrived, the router logged a line, and the tap was gone. Without a stored
+// row there is no way to answer "who opened their task and who ignored it",
+// which is the whole point of putting buttons on the message.
+//
+// Deliberately separate from TaskMessageLog (one row per message SENT):
+// one message can draw several responses, and a response can arrive with no
+// message row to attach to (a Cadre replying out of the blue).
+model TemplateResponse {
+  id           String          @id @default(cuid())
+  // The send this is a response to, when it can be identified. Nullable
+  // because a tap on an older message, or a free-text reply, may not
+  // correlate to a specific row.
+  messageLogId String?
+  messageLog   TaskMessageLog? @relation(fields: [messageLogId], references: [id], onDelete: SetNull)
+  taskId       String?
+  task         Task?           @relation(fields: [taskId], references: [id], onDelete: SetNull)
+  cadreId      String?
+  cadre        User?           @relation("TemplateResponseCadre", fields: [cadreId], references: [id], onDelete: SetNull)
+  // Denormalised so a response survives its Cadre being deleted — the fact
+  // that someone responded is history, not the account's property.
+  cadreName    String
+  cadrePhone   String
+  // BUTTON | TEXT — how the Cadre answered.
+  responseType String
+  // The normalised action: VIEW_TASK, CONTACT_ADMIN, ACCEPT, ... Derived
+  // from the button payload we set at send time, so it stays stable even if
+  // the button's visible label is reworded in the Meta console later.
+  action       String
+  // What the button actually said, or the text they typed. Kept verbatim
+  // because it is what the person saw and chose.
+  label        String?
+  // The raw payload/text as it arrived, for the RAG export and for
+  // debugging a shape that doesn't parse.
+  rawPayload   String?
+  respondedAt  DateTime        @default(now())
+
+  @@index([taskId])
+  @@index([cadreId, respondedAt])
+  @@index([respondedAt])
+  @@index([action])
+}
+
 // Dedup for inbound Fyxo webhook deliveries — Fyxo (like most webhook
 // senders) may redeliver the same event on retry; the delivery id is the
 // primary key so a second delivery of the same event is a harmless no-op
@@ -896,6 +1068,78 @@ model AgentActivityLog {
   @@index([cadreId, createdAt])
 }
 
+// One row per outbound task WhatsApp message — the permanent record of what
+// was sent, to whom, by whom, and whether it landed. The only store: there is
+// no export step and nothing to keep in sync. The Message Log page reads it
+// directly and offers a CSV download for anyone who wants a spreadsheet.
+//
+// Why a separate table rather than reading it off Task: a Task row holds
+// only the LATEST delivery state, and is overwritten by a retry or a
+// completion check, so the history of what a Cadre actually received is lost.
+// It also never stores the rendered message text — the approved template
+// body lives at the provider, so without this the exact words sent are
+// unrecoverable.
+//
+// Every actor reference is a nullable FK with the name denormalised
+// alongside: the log must survive a Cadre or Admin being deleted (ON DELETE
+// SET NULL) and must still read correctly afterwards, which a dangling id
+// alone wouldn't.
+model TaskMessageLog {
+  id             String   @id @default(cuid())
+  cadreId        String?
+  cadre          User?    @relation("MessageLogCadre", fields: [cadreId], references: [id])
+  cadreName      String
+  cadrePhone     String
+  // The rendered body the Cadre actually reads, not the template name.
+  message        String
+  taskId         String?
+  task           Task?    @relation(fields: [taskId], references: [id])
+  taskName       String?
+  // Set when this message was a poll. Poll sends go through the same log as
+  // task sends so the existing button-tap capture correlates them without a
+  // second pipeline — the tap router matches on the recipient's most recent
+  // message, and a poll that never appeared here could never be matched.
+  pollId         String?
+  poll           Poll?    @relation(fields: [pollId], references: [id])
+  assignedById   String?
+  assignedBy     User?    @relation("MessageLogAssignedBy", fields: [assignedById], references: [id])
+  assignedByName String?
+  // ASSIGNMENT | RETRY | COMPLETION_CHECK | NOTIFICATION — what prompted it.
+  kind           String
+  templateName   String?
+  channel        String
+  status         String
+  // The provider's id for this send, so a delivery webhook can be
+  // correlated back to this exact row rather than to the Task as a whole.
+  providerMessageId String?
+  // Meta's own wording for why a send was refused, arriving later on a
+  // message.failed webhook ("Business eligibility payment issue"). Kept
+  // verbatim because it usually names the fix — without it a row reads
+  // FAILED with no way to tell a billing problem from a blocked number.
+  failureReason     String?
+  // The exact variables this template was rendered with, in order. Stored
+  // because a Resend must repeat the ORIGINAL message: re-deriving them from
+  // the task would silently send different text if the task was edited, or
+  // fail outright once the task is gone. Empty for a non-template (Meta
+  // free-text) send, which carries its wording in `message` instead.
+  variables         String[]
+  // Resend bookkeeping. The row keeps its identity — status, provider id and
+  // failure reason are updated in place so the log stays one line per
+  // message — while every attempt is appended here:
+  //   [{ at, providerMessageId, success, error }]
+  retryCount        Int      @default(0)
+  lastRetryAt       DateTime?
+  retryHistory      Json?
+  responses         TemplateResponse[]
+  sentAt         DateTime @default(now())
+
+  @@index([status, sentAt])
+  @@index([sentAt])
+  @@index([cadreId, sentAt])
+  @@index([taskId])
+  @@index([pollId])
+}
+
 // Approved WhatsApp templates pulled from the provider by the Sync button,
 // so a Super Admin picks an Admin's template from a list instead of typing a
 // name that only fails later at send time. A cache of someone else's data:
@@ -926,88 +1170,5 @@ model AvailableTemplate {
   syncedAt  DateTime @default(now())
 }
 
-// The Google service-account credential that does the actual writing,
-// uploaded by a Super Admin in the app (Google Sheet -> Google access) so
-// connecting a sheet needs no .env editing or redeploy. Falls back to
-// GOOGLE_SHEETS_CLIENT_EMAIL/_PRIVATE_KEY when absent, so an existing
-// env-configured deploy keeps working untouched.
-//
-// Singleton, same fixed-id pattern as SheetConnection below.
-//
-// privateKey is stored ENCRYPTED (AES-256-GCM, key derived from
-// JWT_ACCESS_SECRET) — it grants write access to the user's Google Sheets,
-// so a leaked database dump must not hand it over in the clear. See
-// encryptSecret/decryptSecret in google-sheets.service.ts.
-model GoogleServiceAccount {
-  id            String   @id
-  clientEmail   String
-  privateKey    String
-  projectId     String?
-  uploadedById  String?
-  uploadedBy    User?    @relation("GoogleCredentialUploadedBy", fields: [uploadedById], references: [id])
-  uploadedAt    DateTime @default(now())
-}
 
-// The Super Admin's own Google account, connected with one click ("Connect
-// Google Sheets" -> Google's sign-in -> pick a sheet). This is the primary
-// path; GoogleServiceAccount above stays as a fallback for deploys that
-// prefer a robot account and don't want an OAuth app at all.
-//
-// Singleton, same fixed-id pattern as the rest of this file. Holds two
-// different things that are only stored together because both are one-per-
-// install and both are secret:
-//   - clientId/clientSecret: the OAuth *application* identity, registered
-//     once in Google Cloud. Falls back to GOOGLE_OAUTH_CLIENT_ID/_SECRET.
-//   - refreshToken/accountEmail: the *user* who signed in. Set by the OAuth
-//     callback, cleared on disconnect.
-// Both secrets are encrypted at rest (see encryptSecret in
-// google-sheets.service.ts) — a refresh token is a standing key to that
-// person's Google Drive.
-model GoogleOAuthConnection {
-  id            String    @id
-  clientId      String?
-  clientSecret  String?
-  refreshToken  String?
-  accountEmail  String?
-  connectedById String?
-  connectedBy   User?     @relation("GoogleOAuthConnectedBy", fields: [connectedById], references: [id])
-  connectedAt   DateTime?
-}
 
-// The Google Sheet that every outbound task WhatsApp message is logged to,
-// connected by a Super Admin from the app itself (Google Sheet page ->
-// "Connect Sheet") rather than configured in .env — the *which sheet*
-// decision belongs to whoever runs the campaign, not to a deploy. The
-// service-account credential that does the writing is still deploy-level
-// (GOOGLE_SHEETS_CLIENT_EMAIL/_PRIVATE_KEY), since it's one credential for
-// the whole app and handing it to an end user would be a secret leak.
-//
-// Singleton by design: exactly one sheet is live at a time, so every row
-// uses the fixed id below and connecting again overwrites it (upsert) — no
-// "which of these five connections is active?" ambiguity. A model rather
-// than a key/value settings table because these fields are queried and
-// displayed as a unit, and a real schema catches a typo'd key at compile
-// time instead of returning undefined at runtime.
-model SheetConnection {
-  // Fixed literal — see SHEET_CONNECTION_ID in google-sheets.service.ts.
-  id               String    @id
-  spreadsheetId    String
-  spreadsheetUrl   String
-  // Resolved from Google at connect time (not typed by the user), so the UI
-  // can show the sheet's real name as proof the right one is connected.
-  spreadsheetTitle String
-  tabName          String
-  // Nullable so deleting the Super Admin who connected it leaves the
-  // connection working (ON DELETE SET NULL) instead of blocking the delete
-  // or silently misattributing it — same call as AuditLog.userId.
-  connectedById    String?
-  connectedBy      User?     @relation("SheetConnectedBy", fields: [connectedById], references: [id])
-  connectedAt      DateTime  @default(now())
-  // Health of the live sync, surfaced on the settings page. Written only
-  // when the state actually changes (first success after an error, or a new
-  // error) — never once per appended row, which would put 200 writes and a
-  // row lock on this single row during one big allocation.
-  lastAppendAt     DateTime?
-  lastError        String?
-  lastErrorAt      DateTime?
-}

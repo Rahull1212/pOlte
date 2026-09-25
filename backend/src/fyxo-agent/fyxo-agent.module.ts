@@ -1,6 +1,7 @@
 import { Module } from "@nestjs/common";
 import { BullModule } from "@nestjs/bullmq";
 import { FyxoAgentWebhookController } from "./fyxo-agent-webhook.controller";
+import { TaskDetailsService } from "./task-details.service";
 
 // FyxoAgentJobsProcessor (the worker) lives in QueueModule, registered
 // alongside the fyxo-agent-jobs queue there (see queue.module.ts) — the
@@ -12,5 +13,6 @@ import { FyxoAgentWebhookController } from "./fyxo-agent-webhook.controller";
 @Module({
   imports: [BullModule.registerQueue({ name: "fyxo-agent-jobs" })],
   controllers: [FyxoAgentWebhookController],
+  providers: [TaskDetailsService],
 })
 export class FyxoAgentModule {}

@@ -20,7 +20,7 @@ import {
   useCadreOverview,
   useTaskWiseAnalytics,
   useCadreAnalytics,
-  useMandalAnalytics,
+  useConstituencyAnalytics,
   useDistrictAnalytics,
   useTaskAnalyticsCharts,
   useActionCenter,
@@ -30,7 +30,7 @@ import {
   TaskAiInsights,
   AnomalyItem,
   CadreAnalyticsRow,
-  MandalAnalyticsRow,
+  ConstituencyAnalyticsRow,
   DistrictAnalyticsRow,
 } from "@/hooks/use-task-analytics";
 import { TaskStatus, TaskPriority } from "@/lib/shared-types";
@@ -76,9 +76,9 @@ function formatHours(hours: number | null) {
 }
 
 type CadreSortLimit = 5 | 10 | "all";
-type MandalSortKey = "completionPct" | "total" | "completed" | "overdue";
+type ConstituencySortKey = "completionPct" | "total" | "completed" | "overdue";
 
-const SORT_LABEL: Record<MandalSortKey, string> = {
+const SORT_LABEL: Record<ConstituencySortKey, string> = {
   completionPct: "Completion %",
   total: "Total Tasks",
   completed: "Completed",
@@ -91,14 +91,14 @@ export default function TaskAnalyticsPage() {
 
   const [filters, setFilters] = useState<TaskAnalyticsFilters>({});
   const [cadreLimit, setCadreLimit] = useState<CadreSortLimit>(10);
-  const [mandalSort, setMandalSort] = useState<MandalSortKey>("completionPct");
+  const [constituencySort, setConstituencySort] = useState<ConstituencySortKey>("completionPct");
 
   const { data: scope } = useTaskAnalyticsScope();
   const { data: overview } = useTaskAnalyticsOverview(filters);
   const { data: cadreOverview } = useCadreOverview(filters);
   const { data: taskWise } = useTaskWiseAnalytics(filters);
   const { data: cadreWise } = useCadreAnalytics(filters);
-  const { data: mandalWise } = useMandalAnalytics(filters);
+  const { data: constituencyWise } = useConstituencyAnalytics(filters);
   const { data: districtWise } = useDistrictAnalytics(filters);
   const { data: charts } = useTaskAnalyticsCharts(filters);
   const { data: actionCenter } = useActionCenter(filters);
@@ -113,10 +113,10 @@ export default function TaskAnalyticsPage() {
 
   const byId = useMemo(() => new Map((regions ?? []).map((r) => [r.id, r])), [regions]);
   const districts = useMemo(() => (regions ?? []).filter((r) => r.type === "DISTRICT"), [regions]);
-  const mandalsAll = useMemo(() => (regions ?? []).filter((r) => r.type === "MANDAL"), [regions]);
-  const mandals = useMemo(
-    () => (filters.districtId ? mandalsAll.filter((m) => isRegionWithinScope(m.id, new Set([filters.districtId!]), byId)) : mandalsAll),
-    [mandalsAll, filters.districtId, byId],
+  const constituenciesAll = useMemo(() => (regions ?? []).filter((r) => r.type === "CONSTITUENCY"), [regions]);
+  const constituencies = useMemo(
+    () => (filters.districtId ? constituenciesAll.filter((m) => isRegionWithinScope(m.id, new Set([filters.districtId!]), byId)) : constituenciesAll),
+    [constituenciesAll, filters.districtId, byId],
   );
 
   if (user && user.role !== "SUPER_ADMIN" && user.role !== "ADMIN") {
@@ -131,7 +131,7 @@ export default function TaskAnalyticsPage() {
   const clearFilters = () => setFilters({});
   const hasFilters = Object.values(filters).some(Boolean);
 
-  const sortedMandals: MandalAnalyticsRow[] = mandalWise ? [...mandalWise].sort((a, b) => b[mandalSort] - a[mandalSort]) : [];
+  const sortedConstituencies: ConstituencyAnalyticsRow[] = constituencyWise ? [...constituencyWise].sort((a, b) => b[constituencySort] - a[constituencySort]) : [];
   const visibleCadres: CadreAnalyticsRow[] = cadreWise ? (cadreLimit === "all" ? cadreWise : cadreWise.slice(0, cadreLimit)) : [];
 
   const handleGenerateInsights = () => {
@@ -160,10 +160,10 @@ export default function TaskAnalyticsPage() {
 
   const suggestedQuestions = [
     "Which Cadre is performing best?",
-    "Which Mandal has the lowest completion rate?",
+    "Which Constituency has the lowest completion rate?",
     "How many tasks are overdue?",
     "Which Cadres need follow-up?",
-    "Compare Mandal performance.",
+    "Compare Constituency performance.",
     "What should I focus on today?",
   ];
 
@@ -196,7 +196,7 @@ export default function TaskAnalyticsPage() {
             <select
               className="w-full rounded-md border border-slate-300 px-3 py-2 text-sm"
               value={filters.districtId ?? ""}
-              onChange={(e) => updateFilter({ districtId: e.target.value || undefined, mandalId: undefined })}
+              onChange={(e) => updateFilter({ districtId: e.target.value || undefined, constituencyId: undefined })}
             >
               <option value="">All Districts</option>
               {districts.map((d) => (
@@ -207,14 +207,14 @@ export default function TaskAnalyticsPage() {
             </select>
           </div>
           <div>
-            <Label className="text-xs">Mandal</Label>
+            <Label className="text-xs">Constituency</Label>
             <select
               className="w-full rounded-md border border-slate-300 px-3 py-2 text-sm"
-              value={filters.mandalId ?? ""}
-              onChange={(e) => updateFilter({ mandalId: e.target.value || undefined })}
+              value={filters.constituencyId ?? ""}
+              onChange={(e) => updateFilter({ constituencyId: e.target.value || undefined })}
             >
-              <option value="">All Mandals</option>
-              {mandals.map((m) => (
+              <option value="">All Constituencies</option>
+              {constituencies.map((m) => (
                 <option key={m.id} value={m.id}>
                   {m.name}
                 </option>
@@ -336,8 +336,8 @@ export default function TaskAnalyticsPage() {
         <ChartCard title="Tasks by Priority">
           <SimpleBar data={(charts?.tasksByPriority ?? []).map((p) => ({ name: p.name, value: p.value }))} colorByIndex />
         </ChartCard>
-        <ChartCard title="Overdue Tasks by Mandal">
-          <SimpleBar data={(charts?.overdueByMandal ?? []).map((m) => ({ name: m.name, value: m.overdue }))} />
+        <ChartCard title="Overdue Tasks by Constituency">
+          <SimpleBar data={(charts?.overdueByConstituency ?? []).map((m) => ({ name: m.name, value: m.overdue }))} />
         </ChartCard>
         <ChartCard title="Tasks Created Over Time" span>
           <SimpleBar data={(charts?.tasksCreatedOverTime ?? []).map((d) => ({ name: d.date, value: d.count }))} />
@@ -370,7 +370,7 @@ export default function TaskAnalyticsPage() {
                 <th className="px-5 py-2">Rank</th>
                 <th className="px-5 py-2">Cadre Name</th>
                 <th className="px-5 py-2">District</th>
-                <th className="px-5 py-2">Mandal</th>
+                <th className="px-5 py-2">Constituency</th>
                 <th className="px-5 py-2">Assigned</th>
                 <th className="px-5 py-2">Completed</th>
                 <th className="px-5 py-2">Pending</th>
@@ -385,7 +385,7 @@ export default function TaskAnalyticsPage() {
                   <td className="px-5 py-2 text-slate-500">#{i + 1}</td>
                   <td className="px-5 py-2 font-medium text-slate-800">{c.name}</td>
                   <td className="px-5 py-2 text-slate-600">{c.district ?? "—"}</td>
-                  <td className="px-5 py-2 text-slate-600">{c.mandal ?? "—"}</td>
+                  <td className="px-5 py-2 text-slate-600">{c.constituency ?? "—"}</td>
                   <td className="px-5 py-2 text-slate-600">{c.tasksAssigned}</td>
                   <td className="px-5 py-2 text-slate-600">{c.tasksCompleted}</td>
                   <td className="px-5 py-2 text-slate-600">{c.pending}</td>
@@ -413,17 +413,17 @@ export default function TaskAnalyticsPage() {
         </CardContent>
       </Card>
 
-      {/* 6. Mandal Performance */}
+      {/* 6. Constituency Performance */}
       <Card className="mb-6">
         <CardHeader className="flex items-center justify-between">
-          <CardTitle>Mandal Performance</CardTitle>
+          <CardTitle>Constituency Performance</CardTitle>
           <div className="flex items-center gap-1 text-xs text-slate-500">
             Sort by:
-            {(Object.keys(SORT_LABEL) as MandalSortKey[]).map((k) => (
+            {(Object.keys(SORT_LABEL) as ConstituencySortKey[]).map((k) => (
               <button
                 key={k}
-                onClick={() => setMandalSort(k)}
-                className={`rounded-full px-2.5 py-1 ${mandalSort === k ? "bg-brand-600 text-white" : "bg-slate-100 text-slate-600"}`}
+                onClick={() => setConstituencySort(k)}
+                className={`rounded-full px-2.5 py-1 ${constituencySort === k ? "bg-brand-600 text-white" : "bg-slate-100 text-slate-600"}`}
               >
                 {SORT_LABEL[k]}
               </button>
@@ -434,7 +434,7 @@ export default function TaskAnalyticsPage() {
           <table className="w-full min-w-[700px] text-sm">
             <thead className="border-b border-slate-100 text-left text-xs uppercase text-slate-500">
               <tr>
-                <th className="px-5 py-2">Mandal</th>
+                <th className="px-5 py-2">Constituency</th>
                 <th className="px-5 py-2">Total Tasks</th>
                 <th className="px-5 py-2">Assigned Cadres</th>
                 <th className="px-5 py-2">Completed</th>
@@ -444,9 +444,9 @@ export default function TaskAnalyticsPage() {
               </tr>
             </thead>
             <tbody>
-              {sortedMandals.map((m: MandalAnalyticsRow) => (
-                <tr key={m.mandal} className="border-b border-slate-50">
-                  <td className="px-5 py-2 font-medium text-slate-800">{m.mandal}</td>
+              {sortedConstituencies.map((m: ConstituencyAnalyticsRow) => (
+                <tr key={m.constituency} className="border-b border-slate-50">
+                  <td className="px-5 py-2 font-medium text-slate-800">{m.constituency}</td>
                   <td className="px-5 py-2 text-slate-600">{m.total}</td>
                   <td className="px-5 py-2 text-slate-600">{m.cadres}</td>
                   <td className="px-5 py-2 text-slate-600">{m.completed}</td>
@@ -462,7 +462,7 @@ export default function TaskAnalyticsPage() {
                   </td>
                 </tr>
               ))}
-              {sortedMandals.length === 0 && (
+              {sortedConstituencies.length === 0 && (
                 <tr>
                   <td colSpan={7} className="px-5 py-8 text-center text-slate-400">
                     No data yet.
@@ -544,7 +544,7 @@ export default function TaskAnalyticsPage() {
             ))
           ) : (
             <p className="text-sm text-slate-400">
-              Click "Generate Insights" to have AI analyze performance, WhatsApp delivery, and Mandal comparisons
+              Click "Generate Insights" to have AI analyze performance, WhatsApp delivery, and Constituency comparisons
               from your real data (respecting the filters above).
             </p>
           )}
@@ -660,7 +660,7 @@ export default function TaskAnalyticsPage() {
             <Input
               value={question}
               onChange={(e) => setQuestion(e.target.value)}
-              placeholder="Ask about your tasks, Cadres, or Mandals…"
+              placeholder="Ask about your tasks, Cadres, or Constituencies…"
               className="flex-1"
             />
             <Button type="submit" disabled={askAi.isPending || !question.trim()}>

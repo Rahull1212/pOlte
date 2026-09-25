@@ -4,10 +4,22 @@ import { useMemo, useState } from "react";
 import { useRegions, RegionItem } from "@/hooks/use-regions";
 import { RegionType } from "@/lib/shared-types";
 
-// Walks a region's parent chain (not just its direct parent) so this works
-// across a multi-hop gap too — e.g. MANDAL's parent is CONSTITUENCY, whose
-// parent is DISTRICT, so scoping mandals by selected districts still matches.
+/**
+ * Is `regionId` inside one of `scopeIds` — including being one of them?
+ *
+ * Inclusive of the region itself, matching RegionsService.descendantIds()
+ * on the backend, which starts its list with the root. It used to check
+ * ancestors only, so anyone sitting DIRECTLY on the scoped area was
+ * excluded from it: a Cadre whose region is the Constituency (rather than
+ * a Polling Station under it) vanished from that Constituency's own
+ * allocation list.
+ *
+ * Walks the whole parent chain, not just the direct parent, so it still
+ * works across a multi-hop gap — a Polling Station matches the District
+ * two levels above it.
+ */
 export function isRegionWithinScope(regionId: string, scopeIds: Set<string>, byId: Map<string, RegionItem>): boolean {
+  if (scopeIds.has(regionId)) return true;
   let current = byId.get(regionId);
   while (current?.parentId) {
     if (scopeIds.has(current.parentId)) return true;

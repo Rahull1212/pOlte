@@ -57,6 +57,24 @@ export interface CadreLeaderboardEntry {
   total: number;
 }
 
+/**
+ * WhatsApp delivery, derived live from the Message Log rather than stored —
+ * so these numbers and the Message Log page can never disagree.
+ *
+ * `delivered` includes `read`, and `sent` includes both: they are stages of
+ * one message's life, not separate buckets. Rates are of `total`.
+ */
+export interface CommunicationStats {
+  total: number;
+  sent: number;
+  delivered: number;
+  read: number;
+  failed: number;
+  deliveryRatePct: number;
+  readRatePct: number;
+  failureRatePct: number;
+}
+
 export interface AnalyticsOverview {
   targetAchievementPct: number;
   totalTarget: number;
@@ -73,6 +91,7 @@ export interface AnalyticsOverview {
   grievanceResolutionPct: number;
   pendingExpenses: { count: number; amount: number };
   campaigns: CampaignWithProgress[];
+  communication: CommunicationStats;
   // SUPER_ADMIN only
   regionLeaderboard?: { top: RegionLeaderboardEntry[]; bottom: RegionLeaderboardEntry[] };
   // ADMIN only

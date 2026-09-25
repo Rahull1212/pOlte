@@ -30,10 +30,17 @@ export class AllocationsService {
     const allocatedTarget = existingRoots.reduce((s, a) => s + a.target, 0);
     const allocatedBudget = existingRoots.reduce((s, a) => s + Number(a.allocatedBudget), 0);
 
-    if (allocatedTarget + dto.target > campaign.totalTarget) {
+    // A campaign need not declare an overall target or budget — the create
+    // form no longer asks for them. Where one IS declared it still caps what
+    // can be handed out; where it isn't, there is nothing to exceed and the
+    // per-area allocations are the whole plan.
+    if (campaign.totalTarget !== null && allocatedTarget + dto.target > campaign.totalTarget) {
       throw new BadRequestException("Allocation exceeds the campaign's total target");
     }
-    if (allocatedBudget + dto.allocatedBudget > Number(campaign.totalBudget)) {
+    if (
+      campaign.totalBudget !== null &&
+      allocatedBudget + dto.allocatedBudget > Number(campaign.totalBudget)
+    ) {
       throw new BadRequestException("Allocation exceeds the campaign's total budget");
     }
 
@@ -55,7 +62,7 @@ export class AllocationsService {
   }
 
   /**
-   * A District/Mandal/Booth Head splits their own allocation among their
+   * A District/Constituency/Booth Head splits their own allocation among their
    * direct reports' regions. Only the current owner of the parent row (or a
    * State Admin) may perform the split, and the sum of children can never
    * exceed what the parent itself was given.
@@ -176,7 +183,7 @@ export class AllocationsService {
   /**
    * Called when a task's progress changes the achieved count. Applies the
    * delta to the allocation and walks up parentAllocationId so every
-   * ancestor level (Booth -> Mandal -> District -> State) stays in sync.
+   * ancestor level (Booth -> Constituency -> District -> State) stays in sync.
    */
   async propagateAchievedDelta(allocationId: string, delta: number) {
     if (delta === 0) return;

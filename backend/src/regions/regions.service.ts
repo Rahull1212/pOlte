@@ -4,25 +4,29 @@ import { PrismaService } from "../prisma/prisma.service";
 import { isRegionWithinScope } from "../common/utils/region-scope.util";
 import { AuthenticatedUser } from "../auth/types";
 
-// The enforced hierarchy is State -> District -> Mandal -> Booth. Mandal's
-// required parent is District (not Constituency) even though the
-// RegionType enum still has a CONSTITUENCY level for legacy/future use —
-// no real data uses it, and every rule the product defines skips straight
-// from District to Mandal. STATE has no entry: it's the root and can never
-// have a parent.
+// The Election Commission's hierarchy, and only that: State -> District ->
+// Assembly Constituency -> Polling Station. STATE has no entry: it's the
+// root and can never have a parent.
 const REQUIRED_PARENT_TYPE: Partial<Record<RegionType, RegionType>> = {
   DISTRICT: "STATE",
   CONSTITUENCY: "DISTRICT",
-  MANDAL: "DISTRICT",
-  BOOTH: "MANDAL",
+  BOOTH: "CONSTITUENCY",
 };
+
+/** "a District" but "an Assembly Constituency" — the messages read as prose. */
+function withArticle(label: string) {
+  return `${/^[AEIOU]/i.test(label) ? "an" : "a"} ${label}`;
+}
+
+function capitalize(text: string) {
+  return text.charAt(0).toUpperCase() + text.slice(1);
+}
 
 const TYPE_LABEL: Record<RegionType, string> = {
   STATE: "State",
   DISTRICT: "District",
-  CONSTITUENCY: "Constituency",
-  MANDAL: "Mandal",
-  BOOTH: "Booth",
+  CONSTITUENCY: "Assembly Constituency",
+  BOOTH: "Polling Station",
 };
 
 @Injectable()
@@ -31,8 +35,9 @@ export class RegionsService {
 
   /**
    * Validates a (type, parentId) pair against the enforced hierarchy —
-   * shared by create() and update() so a Mandal can never end up under
-   * anything but a District, a Booth under anything but a Mandal, etc.,
+   * shared by create() and update() so an Assembly Constituency can never
+   * end up under anything but a District, a Polling Station under anything
+   * but an AC,
    * regardless of role. Returns the parent region so callers that also need
    * it (e.g. for a scope check) don't have to re-fetch it.
    */
@@ -45,7 +50,7 @@ export class RegionsService {
     }
 
     if (!parentId) {
-      throw new BadRequestException(`A parent area is required for a ${TYPE_LABEL[type]}`);
+      throw new BadRequestException(`A parent area is required for ${withArticle(TYPE_LABEL[type])}`);
     }
     const parent = await this.prisma.region.findUnique({ where: { id: parentId } });
     if (!parent) throw new BadRequestException("Parent area not found");
@@ -53,34 +58,89 @@ export class RegionsService {
     const requiredParentType = REQUIRED_PARENT_TYPE[type]!;
     if (parent.type !== requiredParentType) {
       throw new BadRequestException(
-        `A ${TYPE_LABEL[type]} must be created directly under a ${TYPE_LABEL[requiredParentType]} — "${parent.name}" is a ${TYPE_LABEL[parent.type]}`,
+        `${capitalize(withArticle(TYPE_LABEL[type]))} must be created directly under ${withArticle(TYPE_LABEL[requiredParentType])} — "${parent.name}" is ${withArticle(TYPE_LABEL[parent.type])}`,
       );
     }
     return parent;
   }
 
   /**
-   * SUPER_ADMIN can create any area anywhere in the hierarchy. ADMIN is
-   * limited to adding Booths under a Mandal within their own region subtree
-   * — they can't create new Districts/Mandals or reach outside their own
-   * area. Every role is bound by the same State->District->Mandal->Booth
-   * parent-type rule via assertValidParent().
+   * Rejects a name or official number that already exists among the areas
+   * sharing this parent. Scoped to the parent, never global: "Station 1"
+   * legitimately exists under every Constituency, and every Constituency
+   * numbers its polling stations from 1 — a global rule would make the
+   * second Constituency unusable.
+   *
+   * Names compare case-insensitively, so "Station 2" and "station 2" collide;
+   * they're the same place to anyone reading the tree.
+   *
+   * `excludeId` lets an update ignore the row being edited, so saving an
+   * area without changing its name isn't a conflict with itself.
    */
-  async create(input: { name: string; type: RegionType; parentId?: string }, creator: AuthenticatedUser) {
+  private async assertNoDuplicateUnderParent(
+    parentId: string | null | undefined,
+    name: string | undefined,
+    number: string | null | undefined,
+    excludeId?: string,
+  ) {
+    const siblings = await this.prisma.region.findMany({
+      where: { parentId: parentId ?? null, ...(excludeId ? { id: { not: excludeId } } : {}) },
+      select: { name: true, number: true },
+    });
+
+    if (name) {
+      const clash = siblings.find((s) => s.name.trim().toLowerCase() === name.trim().toLowerCase());
+      if (clash) {
+        throw new BadRequestException(`An area named "${clash.name}" already exists under the same parent area`);
+      }
+    }
+    if (number) {
+      const clash = siblings.find((s) => s.number && s.number.trim().toLowerCase() === number.trim().toLowerCase());
+      if (clash) {
+        throw new BadRequestException(
+          `Polling Station number "${clash.number}" is already used under the same parent area`,
+        );
+      }
+    }
+  }
+
+  /**
+   * SUPER_ADMIN can create any area anywhere in the hierarchy. ADMIN is
+   * limited to adding Polling Stations under a Constituency within their
+   * own region subtree — they can't create new Districts/Constituencies or
+   * reach outside their own area. Every role is bound by the same
+   * State->District->Constituency->Polling Station parent-type rule via
+   * assertValidParent().
+   */
+  async create(
+    input: { name: string; type: RegionType; parentId?: string; number?: string },
+    creator: AuthenticatedUser,
+  ) {
     if (creator.role === "ADMIN" && input.type !== "BOOTH") {
-      throw new ForbiddenException("Admins can only add Booths");
+      throw new ForbiddenException("Admins can only add Polling Stations");
     }
 
     await this.assertValidParent(input.type, input.parentId);
+    await this.assertNoDuplicateUnderParent(input.parentId, input.name, input.number);
 
     if (creator.role === "ADMIN") {
       const withinScope = await isRegionWithinScope(this.prisma, creator.regionId, input.parentId!);
       if (!withinScope) {
-        throw new ForbiddenException("That Mandal is outside your area");
+        throw new ForbiddenException("That Constituency is outside your area");
       }
     }
 
-    return this.prisma.region.create({ data: input });
+    return this.prisma.region.create({
+      data: {
+        name: input.name.trim(),
+        type: input.type,
+        parentId: input.parentId,
+        // Constituencies carry their AC number and Polling Stations their
+        // station number; an empty string is stored as null so the duplicate
+        // check doesn't treat "" as a used number.
+        number: input.type === "BOOTH" || input.type === "CONSTITUENCY" ? input.number?.trim() || null : null,
+      },
+    });
   }
 
   async findById(id: string) {
@@ -90,27 +150,59 @@ export class RegionsService {
   }
 
   /**
-   * SUPER_ADMIN can rename or move any area. ADMIN can only rename (never
-   * move) a Booth within their own region subtree — same restriction shape
-   * as create()/remove().
+   * findById, but only for an area the caller may see: a Super Admin sees
+   * everything, an Admin only their own region and its descendants — the
+   * same scope GET /regions already applies to the list.
+   *
+   * Out-of-scope reports "not found" rather than "forbidden", so the
+   * endpoint can't be used to probe which area ids exist.
    */
-  async update(id: string, data: { name?: string; parentId?: string }, updater: AuthenticatedUser) {
+  async findByIdInScope(id: string, user: AuthenticatedUser) {
+    const region = await this.findById(id);
+    if (user.role === "SUPER_ADMIN") return region;
+
+    const scoped = await this.descendantIds(user.regionId);
+    if (!scoped.includes(id)) throw new NotFoundException("Region not found");
+    return region;
+  }
+
+  /**
+   * SUPER_ADMIN can rename or move any area. ADMIN can only rename (never
+   * move) a Polling Station within their own region subtree — same
+   * restriction shape as create()/remove().
+   */
+  async update(
+    id: string,
+    data: { name?: string; parentId?: string; type?: RegionType; number?: string },
+    updater: AuthenticatedUser,
+  ) {
     const region = await this.findById(id);
 
     if (updater.role === "ADMIN") {
       if (region.type !== "BOOTH") {
-        throw new ForbiddenException("Admins can only rename Booths");
+        throw new ForbiddenException("Admins can only rename Polling Stations");
       }
       if (data.parentId !== undefined) {
         throw new ForbiddenException("Admins cannot move areas");
       }
+      if (data.type !== undefined && data.type !== region.type) {
+        throw new ForbiddenException("Admins cannot change an area's type");
+      }
       const withinScope = await isRegionWithinScope(this.prisma, updater.regionId, id);
       if (!withinScope) {
-        throw new ForbiddenException("That Booth is outside your area");
+        throw new ForbiddenException("That Polling Station is outside your area");
       }
     }
 
-    if (data.parentId !== undefined) {
+    // The type an area will have after this update — a change of type and a
+    // change of parent are validated together, because each only makes sense
+    // against the other (a Constituency moved under a State is invalid; the
+    // same move is correct if it's becoming a District at the same time).
+    const nextType = data.type ?? region.type;
+    const typeChanged = nextType !== region.type;
+    const parentChanged = data.parentId !== undefined && (data.parentId || null) !== region.parentId;
+
+    if (parentChanged) {
       if (data.parentId === id) {
         throw new BadRequestException("An area cannot be its own parent");
       }
@@ -120,14 +212,52 @@ export class RegionsService {
           throw new BadRequestException("Cannot move an area under its own descendant");
         }
       }
-      // A move keeps the region's existing type, so the new parent must
-      // satisfy the exact same State->District->Mandal->Booth rule create()
-      // does (including rejecting an empty/missing parentId for anything
-      // but a State) — otherwise moving would be a backdoor around it.
-      await this.assertValidParent(region.type, data.parentId);
     }
 
-    return this.prisma.region.update({ where: { id }, data });
+    if (parentChanged || typeChanged) {
+      // Whether moving, retyping or both, the result must satisfy the same
+      // State->District->Constituency->Polling Station rule create()
+      // enforces — otherwise either operation would be a backdoor around it.
+      const nextParentId = data.parentId !== undefined ? data.parentId : (region.parentId ?? undefined);
+      await this.assertValidParent(nextType, nextParentId);
+    }
+
+    if (typeChanged) {
+      // An area's children are bound to its type just as it is to its
+      // parent's. Retyping a Constituency to a District would strand its
+      // Polling Stations under something that can't hold them, so it's
+      // refused rather than silently leaving the tree invalid.
+      const children = await this.prisma.region.findMany({ where: { parentId: id }, select: { type: true } });
+      const offending = children.find((c) => REQUIRED_PARENT_TYPE[c.type] !== nextType);
+      if (offending) {
+        throw new BadRequestException(
+          `This area holds ${TYPE_LABEL[offending.type]} areas, which must sit under ${withArticle(TYPE_LABEL[REQUIRED_PARENT_TYPE[offending.type]!])} — move or delete them before changing it to ${withArticle(TYPE_LABEL[nextType])}`,
+        );
+      }
+      if (nextType !== "BOOTH" && nextType !== "CONSTITUENCY" && region.number) {
+        // An official number is meaningless on a State or District; drop it
+        // rather than leave a stale value behind.
+        data.number = undefined;
+      }
+    }
+
+    // Checked against the parent it will have after this update, not the one
+    // it has now.
+    const finalParentId = data.parentId !== undefined ? data.parentId : region.parentId;
+    if (data.name !== undefined || data.number !== undefined || parentChanged) {
+      await this.assertNoDuplicateUnderParent(finalParentId, data.name ?? region.name, data.number ?? region.number, id);
+    }
+
+    return this.prisma.region.update({
+      where: { id },
+      data: {
+        ...(data.name !== undefined ? { name: data.name.trim() } : {}),
+        ...(data.parentId !== undefined ? { parentId: data.parentId || null } : {}),
+        ...(data.type !== undefined ? { type: data.type } : {}),
+        ...(data.number !== undefined ? { number: data.number?.trim() || null } : {}),
+        ...(typeChanged && nextType !== "BOOTH" && nextType !== "CONSTITUENCY" ? { number: null } : {}),
+      },
+    });
   }
 
   children(parentId: string) {
@@ -141,19 +271,19 @@ export class RegionsService {
    * wipe out real operational data (accounts, citizen records, campaign
    * allocations). Callers must clear those out (or reassign them) first.
    *
-   * SUPER_ADMIN can delete any area; ADMIN is limited to Booths within
-   * their own region subtree (mirrors the restriction on create()).
+   * SUPER_ADMIN can delete any area; ADMIN is limited to Polling Stations
+   * within their own region subtree (mirrors the restriction on create()).
    */
   async remove(id: string, remover: AuthenticatedUser) {
     const region = await this.findById(id);
 
     if (remover.role === "ADMIN") {
       if (region.type !== "BOOTH") {
-        throw new ForbiddenException("Admins can only delete Booths");
+        throw new ForbiddenException("Admins can only delete Polling Stations");
       }
       const withinScope = await isRegionWithinScope(this.prisma, remover.regionId, id);
       if (!withinScope) {
-        throw new ForbiddenException("That Booth is outside your area");
+        throw new ForbiddenException("That Polling Station is outside your area");
       }
     }
 
@@ -211,6 +341,44 @@ export class RegionsService {
       }
     }
     return ids;
+  }
+
+  /**
+   * Every active Admin responsible for the given areas.
+   *
+   * Responsibility runs both ways down the tree: an Admin whose own area
+   * sits inside a target covers it (a Constituency Admin under a targeted
+   * District), and so does an Admin whose area CONTAINS a target (a
+   * District Admin when a single Polling Station is targeted). Matching
+   * only one direction would miss half the people who actually own the
+   * work.
+   *
+   * Shared by TasksService (routing a task batch) and CampaignsService
+   * (assigning a campaign by area) so both answer "who covers this?"
+   * identically.
+   */
+  async adminsCovering(targetRegionIds: string[]): Promise<{ id: string }[]> {
+    if (targetRegionIds.length === 0) return [];
+
+    const admins = await this.prisma.user.findMany({
+      where: { role: "ADMIN", isActive: true },
+      select: { id: true, regionId: true },
+    });
+
+    const targetScope = new Set((await Promise.all(targetRegionIds.map((id) => this.descendantIds(id)))).flat());
+
+    const matches: { id: string }[] = [];
+    for (const admin of admins) {
+      if (targetScope.has(admin.regionId)) {
+        matches.push({ id: admin.id });
+        continue;
+      }
+      const adminDescendants = await this.descendantIds(admin.regionId);
+      if (targetRegionIds.some((t) => adminDescendants.includes(t))) {
+        matches.push({ id: admin.id });
+      }
+    }
+    return matches;
   }
 
   isWithinScope(scopeRegionId: string, targetRegionId: string) {

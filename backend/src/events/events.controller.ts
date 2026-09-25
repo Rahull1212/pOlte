@@ -68,21 +68,25 @@ export class EventsController {
   }
 
   @Get(":id")
+  @Roles("SUPER_ADMIN", "ADMIN")
   findById(@Param("id") id: string) {
     return this.eventsService.findById(id);
   }
 
   @Get(":id/detail")
+  @Roles("SUPER_ADMIN", "ADMIN")
   getDetail(@Param("id") id: string) {
     return this.eventsService.getEventDetail(id);
   }
 
   @Get(":id/dashboard")
+  @Roles("SUPER_ADMIN", "ADMIN")
   getDashboard(@Param("id") id: string) {
     return this.eventsService.getEventDashboard(id);
   }
 
   @Get(":id/report")
+  @Roles("SUPER_ADMIN", "ADMIN")
   report(@Param("id") id: string) {
     return this.eventsService.attendanceReport(id);
   }

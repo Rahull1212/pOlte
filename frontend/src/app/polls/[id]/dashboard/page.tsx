@@ -1,11 +1,15 @@
 "use client";
 
+import { useState } from "react";
 import Link from "next/link";
 import { useParams } from "next/navigation";
 import { AppShell } from "@/components/app-shell";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { usePollDashboard, useRetryPollWhatsapp, PollTimelineEvent } from "@/hooks/use-polls";
+import { ButtonResponsesCard } from "@/components/button-responses-card";
+import { downloadPollReport } from "@/lib/poll-report";
+import { Button } from "@/components/ui/button";
 
 const statusTone: Record<string, "slate" | "blue" | "green" | "red"> = {
   PENDING: "slate",
@@ -47,6 +51,7 @@ export default function PollDashboardPage() {
   const params = useParams<{ id: string }>();
   const id = params.id;
   const { data: dashboard, isLoading } = usePollDashboard(id);
+  const [reportState, setReportState] = useState<"idle" | "building" | "error">("idle");
   const retryWhatsapp = useRetryPollWhatsapp();
 
   if (isLoading) {
@@ -74,7 +79,35 @@ export default function PollDashboardPage() {
         <Link href={`/polls/${id}`} className="text-xs text-brand-600 hover:underline">
           ← Back to Poll Details
         </Link>
-        <h1 className="mt-1 text-lg font-semibold text-slate-900">{dashboard.question} — Poll Dashboard</h1>
+        <div className="mt-1 flex flex-wrap items-start justify-between gap-2">
+          <h1 className="text-lg font-semibold text-slate-900">{dashboard.question} — Poll Dashboard</h1>
+          {/* Both Admin and Super Admin can take the results away. The API
+              already refuses a poll outside the caller's area, so anyone who
+              can open this page is entitled to its contents. */}
+          <div className="flex flex-col items-end">
+            <Button
+              variant="secondary"
+              disabled={reportState === "building"}
+              onClick={async () => {
+                setReportState("building");
+                try {
+                  // Built from the dashboard already in hand, so the PDF says
+                  // exactly what is on screen — no second fetch that could
+                  // return different numbers a moment later.
+                  await downloadPollReport(dashboard);
+                  setReportState("idle");
+                } catch {
+                  setReportState("error");
+                }
+              }}
+            >
+              {reportState === "building" ? "Preparing…" : "⬇ Download report (PDF)"}
+            </Button>
+            {reportState === "error" && (
+              <p className="mt-1 text-xs text-red-600">Could not build the PDF. Try again.</p>
+            )}
+          </div>
+        </div>
       </div>
 
       <div className="mb-6 grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-5">
@@ -88,6 +121,11 @@ export default function PollDashboardPage() {
 
       <div className="grid grid-cols-1 gap-5 lg:grid-cols-3">
         <div className="space-y-5 lg:col-span-2">
+          {/* Which button each Cadre actually pressed, straight from the
+              captured taps — the "Results" card below counts the stored
+              selectedOption, which only older polls populate. */}
+          <ButtonResponsesCard filters={{ pollId: id }} title="Who answered what" />
+
           <Card>
             <CardHeader>
               <CardTitle>Results</CardTitle>

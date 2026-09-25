@@ -44,7 +44,7 @@ export class CadreToolsService {
   }
 
   async getMyAssignments(user: AuthenticatedUser, includeCompleted = false) {
-    const tasks = await this.tasksService.findMany({ assignedToId: user.id });
+    const tasks = await this.tasksService.findMany({ assignedToId: user.id }, user);
     const filtered = includeCompleted ? tasks : tasks.filter((t) => t.status !== "COMPLETED" && t.status !== "CANCELLED");
     return filtered.map((t) => ({
       taskId: t.id,
@@ -131,7 +131,7 @@ export class CadreToolsService {
   }
 
   async getMyTaskHistory(user: AuthenticatedUser, sinceDays?: number) {
-    const tasks = await this.tasksService.findMany({ assignedToId: user.id, status: "COMPLETED" });
+    const tasks = await this.tasksService.findMany({ assignedToId: user.id, status: "COMPLETED" }, user);
     const cutoff = sinceDays ? new Date(Date.now() - sinceDays * 86400000) : null;
     const filtered = cutoff ? tasks.filter((t) => t.completedAt && t.completedAt >= cutoff) : tasks;
     return filtered.map((t) => ({ taskId: t.id, name: t.name, completedAt: t.completedAt }));
@@ -144,7 +144,6 @@ export class CadreToolsService {
       taskId,
       objective: task.objective,
       description: task.description,
-      additionalDetails: task.additionalDetails,
       remarks: task.remarks,
     };
   }

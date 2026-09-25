@@ -7,6 +7,10 @@ export interface RegionItem {
   name: string;
   type: RegionType;
   parentId?: string;
+  // The official ECI number: the AC number on a CONSTITUENCY, the polling
+  // station number on a BOOTH ("142", "12A"). Unique among siblings, not
+  // globally — every Constituency numbers its stations from 1.
+  number?: string | null;
 }
 
 export function useRegions() {
@@ -19,7 +23,7 @@ export function useRegions() {
 export function useCreateRegion() {
   const queryClient = useQueryClient();
   return useMutation({
-    mutationFn: (dto: { name: string; type: RegionType; parentId?: string }) =>
+    mutationFn: (dto: { name: string; type: RegionType; parentId?: string; number?: string }) =>
       api.post<RegionItem>("/regions", dto),
     onSuccess: () => queryClient.invalidateQueries({ queryKey: ["regions"] }),
   });
@@ -28,7 +32,7 @@ export function useCreateRegion() {
 export function useUpdateRegion() {
   const queryClient = useQueryClient();
   return useMutation({
-    mutationFn: ({ id, ...dto }: { id: string; name?: string; parentId?: string }) =>
+    mutationFn: ({ id, ...dto }: { id: string; name?: string; parentId?: string; type?: RegionType; number?: string }) =>
       api.patch<RegionItem>(`/regions/${id}`, dto),
     onSuccess: () => queryClient.invalidateQueries({ queryKey: ["regions"] }),
   });

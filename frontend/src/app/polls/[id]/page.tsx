@@ -8,10 +8,8 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Label } from "@/components/ui/input";
-import { RegionMultiSelect, isRegionWithinScope } from "@/components/region-multi-select";
 import { usePollDetail, useAllocatePoll } from "@/hooks/use-polls";
 import { useManagedUsers } from "@/hooks/use-users";
-import { useRegions } from "@/hooks/use-regions";
 
 const statusTone: Record<string, "slate" | "blue" | "green" | "red"> = {
   PENDING: "slate",
@@ -33,42 +31,28 @@ export default function PollDetailPage() {
   const params = useParams<{ id: string }>();
   const id = params.id;
   const { data: poll, isLoading } = usePollDetail(id);
-  const { data: regions } = useRegions();
   const { data: myCadres } = useManagedUsers("CADRE");
   const allocate = useAllocatePoll(id);
 
-  const [districtIds, setDistrictIds] = useState<string[]>([]);
-  const [mandalIds, setMandalIds] = useState<string[]>([]);
-  const [boothIds, setBoothIds] = useState<string[]>([]);
   const [cadreIds, setCadreIds] = useState<string[]>([]);
   const [result, setResult] = useState<{ sentCount: number; failedCount: number } | null>(null);
 
-  const byId = useMemo(() => new Map((regions ?? []).map((r) => [r.id, r])), [regions]);
-
-  const handleDistrictChange = (ids: string[]) => {
-    setDistrictIds(ids);
-    const districtSet = new Set(ids);
-    const nextMandalIds = mandalIds.filter((mid) => isRegionWithinScope(mid, districtSet, byId));
-    setMandalIds(nextMandalIds);
-    const mandalSet = new Set(nextMandalIds);
-    setBoothIds((prev) => prev.filter((bid) => isRegionWithinScope(bid, mandalSet, byId)));
-  };
-
-  const handleMandalChange = (ids: string[]) => {
-    setMandalIds(ids);
-    const mandalSet = new Set(ids);
-    setBoothIds((prev) => prev.filter((bid) => isRegionWithinScope(bid, mandalSet, byId)));
-  };
+  // Only the Cadres this Admin manages — the API returns their own people, so
+  // there is nothing here to narrow by area.
+  const cadres = useMemo(() => (myCadres ?? []).filter((c) => c.isActive), [myCadres]);
+  const allSelected = cadres.length > 0 && cadreIds.length === cadres.length;
 
   const toggleCadre = (cadreId: string) => {
     setCadreIds((prev) => (prev.includes(cadreId) ? prev.filter((c) => c !== cadreId) : [...prev, cadreId]));
   };
 
-  const regionIds = [...districtIds, ...mandalIds, ...boothIds];
-
   const onSubmitAllocate = (e: React.FormEvent) => {
     e.preventDefault();
-    allocate.mutate({ regionIds, cadreIds }, { onSuccess: (res) => setResult(res) });
+    // Cadres only. Area targeting is gone: an Admin sends to their own
+    // people, and asking them to first pick a District — one they often
+    // cannot even see, since an Admin scoped to a Constituency has no
+    // districts in scope — was a step that could only go wrong.
+    allocate.mutate({ regionIds: [], cadreIds }, { onSuccess: (res) => setResult(res) });
   };
 
   if (isLoading) {
@@ -129,48 +113,31 @@ export default function PollDetailPage() {
               </CardHeader>
               <CardContent className="space-y-4">
                 <p className="text-xs text-slate-500">
-                  Choose an area (every active Cadre there gets it) and/or hand-pick specific Cadres. Either way,
-                  selected Cadres are sent this poll via WhatsApp.
+                  Pick who gets this poll. Every Cadre you select is sent it on WhatsApp straight away.
                 </p>
                 <form onSubmit={onSubmitAllocate} className="space-y-4">
-                  <div className="grid grid-cols-1 gap-4 sm:grid-cols-3">
+                  {cadres.length === 0 ? (
+                    <p className="rounded-md border border-amber-200 bg-amber-50 px-3 py-2 text-sm text-amber-800">
+                      You have no active Cadres to send this to yet.
+                    </p>
+                  ) : (
                     <div>
-                      <Label>Select District(s)</Label>
-                      <RegionMultiSelect type="DISTRICT" selected={districtIds} onChange={handleDistrictChange} label="districts" />
-                    </div>
-                    <div>
-                      <Label>Select Mandal(s) — optional</Label>
-                      <RegionMultiSelect
-                        type="MANDAL"
-                        selected={mandalIds}
-                        onChange={handleMandalChange}
-                        label="mandals"
-                        scopeIds={districtIds}
-                        scopeLabel="a district"
-                      />
-                    </div>
-                    <div>
-                      <Label>Select Village / Booth — optional</Label>
-                      <RegionMultiSelect
-                        type="BOOTH"
-                        selected={boothIds}
-                        onChange={setBoothIds}
-                        label="booths"
-                        scopeIds={mandalIds}
-                        scopeLabel="a mandal"
-                      />
-                    </div>
-                  </div>
-                  <p className="text-xs text-slate-500">
-                    {regionIds.length} area{regionIds.length === 1 ? "" : "s"} selected so far.
-                  </p>
-
-                  {myCadres && myCadres.length > 0 && (
-                    <div>
-                      <Label>Or hand-pick specific Cadres — optional</Label>
-                      <div className="max-h-48 space-y-1 overflow-y-auto rounded-md border border-slate-300 p-2">
-                        {myCadres.map((c) => (
-                          <label key={c.id} className="flex items-center gap-2 rounded px-1 py-1 text-sm hover:bg-slate-50">
+                      <div className="flex flex-wrap items-center justify-between gap-2">
+                        <Label>Your Cadres</Label>
+                        <button
+                          type="button"
+                          onClick={() => setCadreIds(allSelected ? [] : cadres.map((c) => c.id))}
+                          className="text-xs font-medium text-brand-600 hover:underline"
+                        >
+                          {allSelected ? "Clear all" : `Select all ${cadres.length}`}
+                        </button>
+                      </div>
+                      <div className="mt-1 max-h-64 space-y-1 overflow-y-auto rounded-md border border-slate-300 p-2">
+                        {cadres.map((c) => (
+                          <label
+                            key={c.id}
+                            className="flex items-center gap-2 rounded px-1 py-1 text-sm hover:bg-slate-50"
+                          >
                             <input
                               type="checkbox"
                               checked={cadreIds.includes(c.id)}
@@ -178,11 +145,17 @@ export default function PollDetailPage() {
                               className="h-4 w-4 rounded border-slate-300"
                             />
                             <span className="text-slate-800">{c.name}</span>
-                            {c.region && <span className="text-xs text-slate-400">{c.region.name} ({c.region.type})</span>}
+                            {c.region && (
+                              <span className="text-xs text-slate-400">
+                                {c.region.name} ({c.region.type})
+                              </span>
+                            )}
                           </label>
                         ))}
                       </div>
-                      {cadreIds.length > 0 && <p className="mt-1 text-xs text-slate-500">{cadreIds.length} Cadre(s) selected.</p>}
+                      <p className="mt-1 text-xs text-slate-500">
+                        {cadreIds.length} of {cadres.length} selected.
+                      </p>
                     </div>
                   )}
 
@@ -198,9 +171,11 @@ export default function PollDetailPage() {
                   <Button
                     type="submit"
                     className="w-full"
-                    disabled={allocate.isPending || (regionIds.length === 0 && cadreIds.length === 0)}
+                    disabled={allocate.isPending || cadreIds.length === 0}
                   >
-                    {allocate.isPending ? "Sending…" : "Allocate & Send"}
+                    {allocate.isPending
+                      ? "Sending…"
+                      : `Send to ${cadreIds.length || "…"} Cadre${cadreIds.length === 1 ? "" : "s"}`}
                   </Button>
                 </form>
               </CardContent>

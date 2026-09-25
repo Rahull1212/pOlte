@@ -18,6 +18,7 @@ export class ExpensesController {
   }
 
   @Get()
+  @Roles("SUPER_ADMIN", "ADMIN")
   findMany(@Query("campaignId") campaignId?: string, @Query("status") approvalStatus?: ApprovalStatus) {
     return this.expensesService.findMany({ campaignId, approvalStatus });
   }

@@ -109,7 +109,7 @@ export class WhatsAppConversationService {
           await this.handleMainMenuChoice(phone, authedUser, upper);
           break;
         case "TASKS_MENU":
-          await this.handleTaskSelection(phone, user.id, context, text);
+          await this.handleTaskSelection(phone, user, context, text);
           break;
         case "TASK_DETAIL":
           await this.handleTaskDetail(phone, authedUser, context, text, mediaUrl);
@@ -214,7 +214,7 @@ export class WhatsAppConversationService {
   private async handleMainMenuChoice(phone: string, user: AuthenticatedUser, choice: string) {
     switch (choice) {
       case "1": {
-        const tasks = await this.tasksService.findMany({ assignedToId: user.id });
+        const tasks = await this.tasksService.findMany({ assignedToId: user.id }, user);
         const open = tasks.filter((t) => t.status !== "COMPLETED" && t.status !== "CANCELLED");
         if (open.length === 0) {
           await this.whatsAppApi.sendText(phone, "You have no open tasks right now.");
@@ -234,7 +234,7 @@ export class WhatsAppConversationService {
       // in place (dormant) rather than deleted, in case this is revisited.
       case "2": {
         // A booth-level Cadre needs events created anywhere up their chain
-        // (their booth, its mandal, its district, ...) — not just events
+        // (their polling station, its constituency, its district, ...) — not just events
         // created at their exact region, and not "descendants" (a booth has
         // none). EventsService.findMany() is built for Admin-style downward
         // scoping, so this walks the tree upward directly instead.
@@ -264,19 +264,19 @@ export class WhatsAppConversationService {
 
   // ---------- tasks ----------
 
-  private async handleTaskSelection(phone: string, userId: string, context: SessionContext, text: string) {
+  private async handleTaskSelection(phone: string, user: AuthenticatedUser, context: SessionContext, text: string) {
     const index = Number.parseInt(text, 10) - 1;
     const taskId = context.taskIds?.[index];
     if (taskId === undefined) {
       await this.whatsAppApi.sendText(phone, "Please reply with a valid number from the list, or MENU.");
       return;
     }
-    const task = await this.tasksService.findById(taskId);
+    const task = await this.tasksService.findById(taskId, user);
     await this.whatsAppApi.sendText(
       phone,
       `"${task.name}"\n${task.description ?? ""}\n\nReply with your completion % (0-100). You can also send a photo as proof first.`,
     );
-    await this.setSession(userId, "TASK_DETAIL", { taskId });
+    await this.setSession(user.id, "TASK_DETAIL", { taskId });
   }
 
   private async handleTaskDetail(
@@ -433,7 +433,7 @@ export class WhatsAppConversationService {
         regionId: citizen.regionId,
         category: context.category,
         description: text,
-        photos: context.photos ?? [],
+        attachmentUrls: context.photos ?? [],
       },
       user,
     );

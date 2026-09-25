@@ -14,6 +14,13 @@ import { useRegions } from "@/hooks/use-regions";
 import { useManagedUsers, ManagedUser } from "@/hooks/use-users";
 import { useCurrentUser } from "@/hooks/use-auth";
 
+const AREA_LABELS: Record<string, string> = {
+  STATE: "State",
+  DISTRICT: "District",
+  CONSTITUENCY: "Assembly Constituency",
+  BOOTH: "Polling Station",
+};
+
 export default function AllocateTaskPage() {
   const params = useParams<{ id: string }>();
   const id = params.id;
@@ -26,7 +33,7 @@ export default function AllocateTaskPage() {
   const allocate = useAllocateTask(id);
 
   const [district, setDistrict] = useState("");
-  const [mandal, setMandal] = useState("");
+  const [constituency, setConstituency] = useState("");
   const [search, setSearch] = useState("");
   const [selectedCadreIds, setSelectedCadreIds] = useState<string[]>([]);
   const [showConfirm, setShowConfirm] = useState(false);
@@ -45,20 +52,20 @@ export default function AllocateTaskPage() {
   }, [myRegion, districts]);
   const effectiveDistrict = district || defaultDistrictId;
 
-  const mandalsAll = useMemo(() => (regions ?? []).filter((r) => r.type === "MANDAL"), [regions]);
-  const mandals = useMemo(() => {
+  const constituenciesAll = useMemo(() => (regions ?? []).filter((r) => r.type === "CONSTITUENCY"), [regions]);
+  const constituencies = useMemo(() => {
     if (effectiveDistrict) {
-      return mandalsAll.filter((m) => isRegionWithinScope(m.id, new Set([effectiveDistrict]), byId));
+      return constituenciesAll.filter((m) => isRegionWithinScope(m.id, new Set([effectiveDistrict]), byId));
     }
-    // No District exists in this Admin's own scope (they're Mandal/Booth-level) — whatever Mandal(s) they have is all there is.
-    return mandalsAll;
-  }, [mandalsAll, effectiveDistrict, byId]);
-  const defaultMandalId = useMemo(() => {
-    if (myRegion?.type === "MANDAL") return myRegion.id;
-    if (mandals.length === 1) return mandals[0].id;
+    // No District exists in this Admin's own scope (they're Constituency/Booth-level) — whatever Constituency(s) they have is all there is.
+    return constituenciesAll;
+  }, [constituenciesAll, effectiveDistrict, byId]);
+  const defaultConstituencyId = useMemo(() => {
+    if (myRegion?.type === "CONSTITUENCY") return myRegion.id;
+    if (constituencies.length === 1) return constituencies[0].id;
     return "";
-  }, [myRegion, mandals]);
-  const effectiveMandal = mandal || defaultMandalId;
+  }, [myRegion, constituencies]);
+  const effectiveConstituency = constituency || defaultConstituencyId;
 
   const isBoothLevelAdmin = myRegion?.type === "BOOTH";
 
@@ -66,12 +73,12 @@ export default function AllocateTaskPage() {
 
   const cadresInScope = useMemo(() => {
     const activeCadres = (myCadres ?? []).filter((c) => c.isActive);
-    if (effectiveMandal) {
-      return activeCadres.filter((c) => isRegionWithinScope(c.regionId, new Set([effectiveMandal]), byId));
+    if (effectiveConstituency) {
+      return activeCadres.filter((c) => isRegionWithinScope(c.regionId, new Set([effectiveConstituency]), byId));
     }
     if (isBoothLevelAdmin) return activeCadres; // already fully scoped to their one Booth
     return [];
-  }, [myCadres, effectiveMandal, byId, isBoothLevelAdmin]);
+  }, [myCadres, effectiveConstituency, byId, isBoothLevelAdmin]);
 
   const filteredCadres = useMemo(() => {
     if (!search.trim()) return cadresInScope;
@@ -86,7 +93,7 @@ export default function AllocateTaskPage() {
 
   const handleDistrictChange = (value: string) => {
     setDistrict(value);
-    setMandal("");
+    setConstituency("");
   };
 
   const toggleCadre = (cadreId: string) => {
@@ -204,17 +211,57 @@ export default function AllocateTaskPage() {
         <p className="mt-1 text-sm text-slate-500">"{task.name}" — pick the Cadres this should go to.</p>
       </div>
 
+      {/* What the Cadre will actually receive, shown before sending rather
+          than discovered afterwards — the template is decided by whoever
+          created the task, so an allocating Admin has no other way to know. */}
+      {task.outgoingTemplate && (
+        <Card className="mx-auto mb-4 max-w-3xl">
+          <CardHeader className="flex flex-wrap items-center justify-between gap-2">
+            <CardTitle>WhatsApp message they will receive</CardTitle>
+            <div className="flex items-center gap-2">
+              <code className="rounded bg-slate-100 px-1.5 py-0.5 text-xs text-slate-800">
+                {task.outgoingTemplate.name}
+              </code>
+              <Badge tone="slate">{task.outgoingTemplate.language}</Badge>
+              {task.outgoingTemplate.isDefault && <Badge tone="slate">default</Badge>}
+            </div>
+          </CardHeader>
+          <CardContent className="space-y-2">
+            {task.outgoingTemplate.preview ? (
+              <div className="whitespace-pre-line rounded-lg border border-emerald-100 bg-emerald-50 px-3 py-2 text-sm text-slate-800">
+                {task.outgoingTemplate.preview}
+              </div>
+            ) : (
+              <p className="text-sm text-slate-500">
+                No approved copy recorded for this template, so the exact wording can&apos;t be previewed here.
+              </p>
+            )}
+            <p className="text-xs text-slate-500">
+              {task.outgoingTemplate.isDefault
+                ? "Nobody has been assigned a template, so the shared default is used."
+                : `${task.outgoingTemplate.ownerName}'s template, because they created this task.`}{" "}
+              Each Cadre sees their own name in place of &quot;&lt;Cadre name&gt;&quot;, and taps the button to get
+              the full task details.
+            </p>
+          </CardContent>
+        </Card>
+      )}
+
       <Card className="mx-auto max-w-3xl">
         <CardHeader>
-          <CardTitle>Select District → Mandal → Cadres</CardTitle>
+          <CardTitle>Select District → Constituency → Cadres</CardTitle>
         </CardHeader>
         <CardContent className="space-y-5">
           <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
             <div>
-              <Label htmlFor="district">District</Label>
+              {/* An Admin whose own area IS a Constituency (or a Polling
+                  Station) has no District to choose from — so the field is
+                  labelled for what it actually shows rather than calling
+                  their Constituency a "District". */}
+              <Label htmlFor="district">{districts.length === 0 ? "Your area" : "District"}</Label>
               {districts.length === 0 ? (
                 <p className="rounded-md border border-slate-200 bg-slate-50 px-3 py-2 text-sm text-slate-500">
-                  {myRegion ? `${myRegion.name} (${myRegion.type})` : "Your area"}
+                  {myRegion ? `${myRegion.name} (${AREA_LABELS[myRegion.type] ?? myRegion.type})` : "Your area"}
                 </p>
               ) : (
                 <select
@@ -233,22 +280,22 @@ export default function AllocateTaskPage() {
             </div>
 
             <div>
-              <Label htmlFor="mandal">Mandal</Label>
+              <Label htmlFor="constituency">Constituency</Label>
               {regionsLoading ? (
                 <p className="text-sm text-slate-400">Loading…</p>
-              ) : mandals.length === 0 ? (
+              ) : constituencies.length === 0 ? (
                 <p className="rounded-md border border-slate-200 bg-slate-50 px-3 py-2 text-sm text-slate-500">
-                  {isBoothLevelAdmin ? "N/A — your area is a single Booth" : "No Mandals found in this District."}
+                  {isBoothLevelAdmin ? "N/A — your area is a single Booth" : "No Constituencies found in this District."}
                 </p>
               ) : (
                 <select
-                  id="mandal"
+                  id="constituency"
                   className="w-full rounded-md border border-slate-300 px-3 py-2 text-sm"
-                  value={effectiveMandal}
-                  onChange={(e) => setMandal(e.target.value)}
+                  value={effectiveConstituency}
+                  onChange={(e) => setConstituency(e.target.value)}
                 >
-                  <option value="">Select a Mandal…</option>
-                  {mandals.map((m) => (
+                  <option value="">Select a Constituency…</option>
+                  {constituencies.map((m) => (
                     <option key={m.id} value={m.id}>
                       {m.name}
                     </option>
@@ -261,7 +308,7 @@ export default function AllocateTaskPage() {
           <div>
             <div className="mb-2 flex flex-wrap items-center justify-between gap-2">
               <Label htmlFor="cadreSearch" className="mb-0">
-                Cadres {effectiveMandal || isBoothLevelAdmin ? "" : "— select a Mandal first"}
+                Cadres {effectiveConstituency || isBoothLevelAdmin ? "" : "— select a Constituency first"}
               </Label>
               <div className="flex items-center gap-2">
                 <Button type="button" variant="secondary" onClick={selectAllVisible} disabled={filteredCadres.length === 0}>
@@ -283,12 +330,12 @@ export default function AllocateTaskPage() {
             <div className="max-h-72 space-y-1 overflow-y-auto rounded-md border border-slate-300 p-2">
               {cadresLoading && <p className="px-2 py-4 text-center text-sm text-slate-400">Loading Cadres…</p>}
 
-              {!cadresLoading && !effectiveMandal && !isBoothLevelAdmin && (
-                <p className="px-2 py-4 text-center text-sm text-slate-400">Select a Mandal to see its Cadres.</p>
+              {!cadresLoading && !effectiveConstituency && !isBoothLevelAdmin && (
+                <p className="px-2 py-4 text-center text-sm text-slate-400">Select a Constituency to see its Cadres.</p>
               )}
 
               {!cadresLoading &&
-                (effectiveMandal || isBoothLevelAdmin) &&
+                (effectiveConstituency || isBoothLevelAdmin) &&
                 filteredCadres.length === 0 && (
                   <p className="px-2 py-4 text-center text-sm text-slate-400">
                     {cadresInScope.length === 0 ? "No active Cadres found here." : "No Cadres match your search."}

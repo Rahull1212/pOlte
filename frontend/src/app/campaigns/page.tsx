@@ -7,6 +7,8 @@ import { AppShell } from "@/components/app-shell";
 import { CampaignCard } from "@/components/campaign-card";
 import { Button } from "@/components/ui/button";
 import { useCampaigns } from "@/hooks/use-campaigns";
+import { useCurrentUser } from "@/hooks/use-auth";
+import { useSearchQuery, matchesQuery } from "@/hooks/use-search-query";
 import { useUiStore } from "@/store/ui-store";
 
 const STATUS_OPTIONS = ["ACTIVE", "UPCOMING", "COMPLETED", "DRAFT", "CANCELLED"];
@@ -23,6 +25,7 @@ export default function CampaignsPage() {
 }
 
 function CampaignsPageContent() {
+  const { data: user } = useCurrentUser();
   const { campaignFilter, setCampaignFilter } = useUiStore();
   const searchParams = useSearchParams();
   const appliedUrlFilter = useRef(false);
@@ -38,10 +41,12 @@ function CampaignsPageContent() {
   }, [searchParams, setCampaignFilter]);
 
   const { data: campaigns, isLoading } = useCampaigns(campaignFilter);
-  const searchQuery = searchParams.get("q")?.toLowerCase().trim();
-  const visibleCampaigns = searchQuery
-    ? campaigns?.filter((c) => c.name.toLowerCase().includes(searchQuery))
-    : campaigns;
+  // Same hook every other section uses, so the header box behaves
+  // identically here and everywhere else.
+  const searchQuery = useSearchQuery();
+  const visibleCampaigns = (campaigns ?? []).filter((c) =>
+    matchesQuery(searchQuery, c.name, c.description),
+  );
 
   return (
     <AppShell>
@@ -49,9 +54,14 @@ function CampaignsPageContent() {
         <h1 className="text-lg font-semibold text-slate-900">
           Campaigns{searchQuery && <span className="font-normal text-slate-400"> — search: &quot;{searchQuery}&quot;</span>}
         </h1>
-        <Link href="/campaigns/new">
-          <Button>+ New Campaign</Button>
-        </Link>
+        {/* Only a Super Admin creates campaigns. An Admin's part is to
+            accept the ones handed to them and allocate the work to their
+            Cadres, so the button isn't offered to them at all. */}
+        {user?.role === "SUPER_ADMIN" && (
+          <Link href="/campaigns/new">
+            <Button>+ New Campaign</Button>
+          </Link>
+        )}
       </div>
 
       <div className="mb-4 flex gap-2">
@@ -75,10 +85,10 @@ function CampaignsPageContent() {
       {isLoading && <p className="text-sm text-slate-500">Loading...</p>}
 
       <div className="grid grid-cols-1 gap-4 md:grid-cols-3">
-        {visibleCampaigns?.map((campaign) => (
+        {visibleCampaigns.map((campaign) => (
           <CampaignCard key={campaign.id} campaign={campaign} />
         ))}
-        {searchQuery && visibleCampaigns?.length === 0 && (
+        {searchQuery && visibleCampaigns.length === 0 && (
           <p className="col-span-full py-6 text-center text-sm text-slate-500">
             No campaigns match &quot;{searchQuery}&quot;.
           </p>

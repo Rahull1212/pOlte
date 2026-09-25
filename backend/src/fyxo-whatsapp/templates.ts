@@ -60,6 +60,24 @@ export const FYXO_TEMPLATES = {
   // the doc comment above and renderFyxoBody() below, instead of the
   // wording only living in a comment nobody re-derives from code.
   TASK_ASSIGNED: { name: "polios", language: "en", body: "Hi {{1}}, we have assigned a task to you please check" },
+  // The richer assignment template: four variables and two Quick Replies.
+  //   {{1}} Cadre name  {{2}} Campaign  {{3}} Task  {{4}} Due date
+  // Buttons: "View Task" and "Contact Admin". Which one was tapped is
+  // recorded via buttonPayloads (API.md §5) — see TEMPLATE_BUTTON_ACTIONS
+  // below and ConversationRouterService.handleButton.
+  //
+  // As with every entry here, PoliOS cannot create or approve this: the
+  // name must already exist and be APPROVED in Fyxo/Meta before a send
+  // will succeed. Until then sends fall back to whatever template the
+  // sender owns (MessageTemplatesService.resolveFor).
+  TASK_ASSIGNED_V2: {
+    name: "task_assigned_v2",
+    language: "en",
+    body:
+      "New Task Assigned\n\nHello {{1}},\n\nA new task has been assigned to you.\n\n" +
+      "Campaign: {{2}}\nTask: {{3}}\nDue Date: {{4}}\n\n" +
+      "Please review the task and take the required action.",
+  },
   TASK_COMPLETION_CHECK: {
     name: "task_completion_check",
     language: "en",
@@ -86,3 +104,57 @@ export function renderFyxoBody(template: { name: string; body?: string }, variab
   }
   return template.body.replace(/\{\{(\d+)\}\}/g, (match, n) => variables[Number(n) - 1] ?? match);
 }
+
+/**
+ * The Quick Reply buttons on TASK_ASSIGNED_V2, in the order they appear in
+ * the approved template, and the action each records.
+ *
+ * A template button tap arrives carrying the payload we set at send time
+ * (API.md §5), positionally matched to this list. The ACTION is what gets
+ * stored, not the label: rewording "View Task" to "Open Task" in the Meta
+ * console must not silently split one action into two in the dashboard.
+ */
+export const TEMPLATE_BUTTON_ACTIONS = [
+  { action: "VIEW_TASK", label: "View Task" },
+  { action: "CONTACT_ADMIN", label: "Contact Admin" },
+] as const;
+
+export type TemplateButtonAction = (typeof TEMPLATE_BUTTON_ACTIONS)[number]["action"];
+
+/**
+ * Per-button payloads for one recipient: ["VIEW_TASK:<taskId>",
+ * "CONTACT_ADMIN:<taskId>"].
+ *
+ * Carrying the task id in every button is what makes a tap attributable to
+ * a specific assignment rather than just "someone with this number tapped
+ * something".
+ */
+export function taskButtonPayloads(taskId: string): string[] {
+  return TEMPLATE_BUTTON_ACTIONS.map((b) => `${b.action}:${taskId}`);
+}
+
+/** Splits a payload back into its action and task id; null if it isn't ours. */
+export function parseButtonPayload(payload: string): { action: string; taskId: string } | null {
+  const [action, taskId] = payload.split(":");
+  if (!action || !taskId) return null;
+  return { action, taskId };
+}
+
+/**
+ * The variable order a template expects, when the Super Admin hasn't set a
+ * per-Admin mapping for it.
+ *
+ * Only templates whose approved wording we know go here. task_assigned_v2
+ * reads who / which campaign / what / when, which is NOT the conventional
+ * who/what/when order the generic default uses — without this entry its
+ * {{2}} would be filled with the task name and every message would name the
+ * wrong thing.
+ */
+export const TEMPLATE_VARIABLE_ORDER: Record<string, string[]> = {
+  // Approved, 4 variables, buttons "view task" / "contact admin". Its body
+  // reads Campaign / Task / Due Date in that order — NOT the conventional
+  // who/what/when — so without an entry here the generic 3-slot default left
+  // the 4th variable unfilled and put the wrong value in {{2}}.
+  task_assigned: ["CADRE_NAME", "CAMPAIGN_NAME", "TASK_NAME", "DEADLINE"],
+  task_assigned_v2: ["CADRE_NAME", "CAMPAIGN_NAME", "TASK_NAME", "DEADLINE"],
+};

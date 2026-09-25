@@ -9,6 +9,7 @@ import { useRouter, useSearchParams } from "next/navigation";
 import { useLogin } from "@/hooks/use-auth";
 import { Button } from "@/components/ui/button";
 import { Input, Label } from "@/components/ui/input";
+import { PasswordInput } from "@/components/ui/password-input";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 
 // useSearchParams() opts a page out of static generation unless it's inside
@@ -63,7 +64,7 @@ function LoginForm() {
                   Forgot password?
                 </Link>
               </div>
-              <Input id="password" type="password" {...register("password")} />
+              <PasswordInput id="password" {...register("password")} />
               {errors.password && <p className="mt-1 text-xs text-red-600">{errors.password.message}</p>}
             </div>
             {login.isError && (

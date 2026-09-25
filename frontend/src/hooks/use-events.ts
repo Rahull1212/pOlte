@@ -41,7 +41,7 @@ export interface EventDetail {
   organizer: string | null;
   district: string | null;
   constituency: string | null;
-  mandal: string | null;
+  pollingStation: string | null;
   expectedAttendees: number | null;
   assignedMembers: EventAssignedMember[];
   instructions: string | null;
@@ -78,7 +78,7 @@ export interface EventDashboard {
     lateArrivals: number;
   };
   districtWise: { district: string; invited: number; attended: number; attendancePct: number }[];
-  mandalWise: { mandal: string; invited: number; attended: number; attendancePct: number }[];
+  constituencyWise: { constituency: string; invited: number; attended: number; attendancePct: number }[];
   memberWise: EventDashboardMember[];
   attendanceTrend: { date: string; checkedIn: number }[];
 }

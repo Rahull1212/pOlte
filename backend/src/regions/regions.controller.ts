@@ -1,4 +1,6 @@
 import { Body, Controller, Delete, Get, Param, Patch, Post, UseGuards } from "@nestjs/common";
+import { createRegionSchema, CreateRegionDto, updateRegionSchema, UpdateRegionDto } from "../shared-types";
+import { ZodValidationPipe } from "../common/pipes/zod-validation.pipe";
 import { RegionsService } from "./regions.service";
 import { Roles } from "../common/decorators/roles.decorator";
 import { RolesGuard } from "../common/guards/roles.guard";
@@ -12,7 +14,10 @@ export class RegionsController {
   @Post()
   @UseGuards(RolesGuard)
   @Roles("SUPER_ADMIN", "ADMIN")
-  create(@Body() body: { name: string; type: any; parentId?: string }, @CurrentUser() user: AuthenticatedUser) {
+  create(
+    @Body(new ZodValidationPipe(createRegionSchema)) body: CreateRegionDto,
+    @CurrentUser() user: AuthenticatedUser,
+  ) {
     return this.regionsService.create(body, user);
   }
 
@@ -21,9 +26,13 @@ export class RegionsController {
     return this.regionsService.findAllInScope(user.role === "SUPER_ADMIN" ? undefined : user.regionId);
   }
 
+  // Scoped like the list above: an Admin can only read areas inside their
+  // own subtree. Previously any authenticated user could read any area by id.
   @Get(":id")
-  findById(@Param("id") id: string) {
-    return this.regionsService.findById(id);
+  @UseGuards(RolesGuard)
+  @Roles("SUPER_ADMIN", "ADMIN")
+  findById(@Param("id") id: string, @CurrentUser() user: AuthenticatedUser) {
+    return this.regionsService.findByIdInScope(id, user);
   }
 
   @Patch(":id")
@@ -31,14 +40,19 @@ export class RegionsController {
   @Roles("SUPER_ADMIN", "ADMIN")
   update(
     @Param("id") id: string,
-    @Body() body: { name?: string; parentId?: string },
+    @Body(new ZodValidationPipe(updateRegionSchema)) body: UpdateRegionDto,
     @CurrentUser() user: AuthenticatedUser,
   ) {
     return this.regionsService.update(id, body, user);
   }
 
   @Get(":id/children")
-  children(@Param("id") id: string) {
+  @UseGuards(RolesGuard)
+  @Roles("SUPER_ADMIN", "ADMIN")
+  async children(@Param("id") id: string, @CurrentUser() user: AuthenticatedUser) {
+    // Reading the parent first is the access check — it throws for an area
+    // outside the caller's scope.
+    await this.regionsService.findByIdInScope(id, user);
     return this.regionsService.children(id);
   }
 

@@ -9,13 +9,16 @@
     "typecheck": "tsc --noEmit -p tsconfig.json"
   },
   "dependencies": {
+    "@hookform/resolvers": "^3.9.0",
     "@tanstack/react-query": "^5.59.0",
     "clsx": "^2.1.1",
+    "jspdf": "^4.2.1",
+    "jspdf-autotable": "^5.0.8",
+    "mermaid": "^12.0.0",
     "next": "^14.2.13",
     "react": "^18.3.1",
     "react-dom": "^18.3.1",
     "react-hook-form": "^7.53.0",
-    "@hookform/resolvers": "^3.9.0",
     "recharts": "^2.12.7",
     "zod": "^3.23.8",
     "zustand": "^4.5.5"

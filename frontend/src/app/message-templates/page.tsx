@@ -1,11 +1,13 @@
 "use client";
 
 import { useState } from "react";
+import { ButtonReplyAction, TemplateButtonReplyDto, TemplateVariableSource } from "@/lib/shared-types";
 import { AppShell } from "@/components/app-shell";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Input, Label, Textarea } from "@/components/ui/input";
+import { TemplateFlowDiagram } from "@/components/templates/template-flow-diagram";
 import {
   useMessageTemplates,
   useAssignMessageTemplate,
@@ -16,6 +18,18 @@ import {
   AvailableTemplate,
 } from "@/hooks/use-message-templates";
 
+// Matches TemplateVariableSource in shared-types. Labels are what the Super
+// Admin picks from; the value is what the backend fills the slot with.
+const VARIABLE_SOURCES: { value: TemplateVariableSource; label: string; example: string }[] = [
+  { value: "CADRE_NAME", label: "Cadre's name", example: "Sai" },
+  { value: "TASK_NAME", label: "Task name", example: "Collect Ward IDs" },
+  { value: "DEADLINE", label: "Deadline", example: "22 Sept" },
+  { value: "PRIORITY", label: "Priority", example: "Urgent" },
+  { value: "ASSIGNED_BY", label: "Assigning Admin", example: "Sai Ganesh" },
+];
+
+const DEFAULT_ORDER: TemplateVariableSource[] = ["CADRE_NAME", "TASK_NAME", "DEADLINE"];
+
 function errorMessage(error: unknown): string | null {
   if (!error) return null;
   return error instanceof Error ? error.message : "Something went wrong";
@@ -24,6 +38,26 @@ function errorMessage(error: unknown): string | null {
 // The one body variable every assignment template takes is the Cadre's name,
 // so the preview substitutes a sample name for {{1}} — showing the Super
 // Admin what a Cadre will actually read, not the raw placeholder.
+/**
+ * A sensible starting action for a freshly-picked template, guessed from
+ * the button's own wording. Only a default — the Super Admin can change
+ * any of them, and a button we can't guess starts as "no reply" rather
+ * than sending something wrong.
+ */
+function defaultActionFor(label: string): ButtonReplyAction {
+  const l = label.toLowerCase();
+  if (l.includes("task") || l.includes("detail") || l.includes("view")) return "TASK_DETAILS";
+  if (l.includes("admin") || l.includes("contact") || l.includes("call")) return "ADMIN_CONTACT";
+  return "NONE";
+}
+
+const ACTION_LABELS: Record<ButtonReplyAction, string> = {
+  TASK_DETAILS: "Send the task details",
+  ADMIN_CONTACT: "Send their Admin's contact",
+  CUSTOM_TEXT: "Send a custom message",
+  NONE: "Do nothing",
+};
+
 function preview(body: string): string {
   return body.replace(/\{\{1\}\}/g, "Ravi").replace(/\{\{(\d+)\}\}/g, "…");
 }
@@ -35,10 +69,19 @@ function OwnerRow({ owner, available }: { owner: TemplateOwner; available: Avail
   const [name, setName] = useState(owner.templateName ?? "");
   const [language, setLanguage] = useState(owner.templateLanguage ?? "en");
   const [body, setBody] = useState(owner.templateBody ?? "");
+  const [variables, setVariables] = useState<TemplateVariableSource[]>(
+    (owner.templateVariables ?? []) as TemplateVariableSource[],
+  );
+  // What each Quick Reply answers with. Keyed by the button's label, since
+  // that is what actually arrives on a tap.
+  const [buttons, setButtons] = useState<TemplateButtonReplyDto[]>(owner.templateButtons ?? []);
   // Free typing stays available even with a synced catalogue — a template
   // approved a minute ago won't be in the last sync, and blocking it would
   // be worse than allowing a name that might be wrong.
   const [manual, setManual] = useState(false);
+  // Open by default: the whole point is that you see the flow while editing
+  // it, not that you go looking for it.
+  const [flowOpen, setFlowOpen] = useState(true);
   const usePicker = available.length > 0 && !manual;
 
   // Choosing from the catalogue fills language and body too, so the Super
@@ -49,13 +92,83 @@ function OwnerRow({ owner, available }: { owner: TemplateOwner; available: Avail
     if (match) {
       setLanguage(match.language);
       setBody(match.body ?? "");
+      // Seed one slot per declared variable with the conventional order, so
+      // a template is usable without touching the dropdowns.
+      const count = match.variables ?? 1;
+      setVariables(Array.from({ length: count }, (_, i) => DEFAULT_ORDER[i] ?? "CADRE_NAME"));
+      // One row per approved button, keeping any reply already configured
+      // for a button of the same name.
+      setButtons(
+        (match.buttons ?? []).map((label) => {
+          const existing = (owner.templateButtons ?? []).find(
+            (b) => b.label.trim().toLowerCase() === label.trim().toLowerCase(),
+          );
+          return existing ?? { label, action: defaultActionFor(label) };
+        }),
+      );
     }
   };
+
+  /**
+   * One row per Quick Reply the SELECTED template declares, carrying
+   * whatever reply is currently configured for it.
+   *
+   * Derived from the synced catalogue rather than from saved config: an
+   * Admin whose template was assigned before button replies existed has no
+   * saved config, and keying off that alone hid the whole section from
+   * them until they re-picked the template.
+   */
+  const buttonRows: TemplateButtonReplyDto[] = (
+    available.find((t) => t.name === name)?.buttons ?? buttons.map((b) => b.label)
+  ).map((label) => {
+    const configured = buttons.find(
+      (b) => b.label.trim().toLowerCase() === label.trim().toLowerCase(),
+    );
+    return configured ?? { label, action: defaultActionFor(label) };
+  });
+
+  // Which buttons currently have their context box open. A button with
+  // saved wording counts as open, so reopening the form shows what is
+  // already there rather than hiding it behind the +.
+  const [contextOpen, setContextOpen] = useState<string[]>([]);
+  const hasContext = (b: TemplateButtonReplyDto) =>
+    Boolean(b.text?.length) || contextOpen.includes(b.label) || b.action === "CUSTOM_TEXT";
+
+  const toggleContext = (label: string) => {
+    const row = buttonRows.find((b) => b.label === label);
+    // Closing it clears the wording — leaving hidden text that still sends
+    // would be worse than losing a sentence the user chose to discard.
+    if (row && hasContext(row)) {
+      updateButton(label, { text: undefined });
+      setContextOpen((current) => current.filter((l) => l !== label));
+      return;
+    }
+    setContextOpen((current) => [...current, label]);
+  };
+
+  /** Updates one button's config, inserting it if it wasn't saved before. */
+  const updateButton = (label: string, patch: Partial<TemplateButtonReplyDto>) =>
+    setButtons((current) => {
+      const existing = current.find((b) => b.label.trim().toLowerCase() === label.trim().toLowerCase());
+      if (existing) {
+        return current.map((b) => (b === existing ? { ...b, ...patch } : b));
+      }
+      return [...current, { label, action: defaultActionFor(label), ...patch }];
+    });
+
+  // How many {{n}} the selected template declares — from the sync, so the
+  // form asks for exactly the right number.
+  const variableSlots = Array.from(
+    { length: available.find((t) => t.name === name)?.variables ?? Math.max(variables.length, 1) },
+    (_, i) => i,
+  );
 
   const startEditing = () => {
     setName(owner.templateName ?? "");
     setLanguage(owner.templateLanguage ?? "en");
     setBody(owner.templateBody ?? "");
+    setVariables((owner.templateVariables ?? []) as TemplateVariableSource[]);
+    setButtons(owner.templateButtons ?? []);
     assign.reset();
     setEditing(true);
   };
@@ -63,7 +176,17 @@ function OwnerRow({ owner, available }: { owner: TemplateOwner; available: Avail
   const submit = (e: React.FormEvent) => {
     e.preventDefault();
     assign.mutate(
-      { userId: owner.userId, templateName: name.trim(), templateLanguage: language.trim() || "en", templateBody: body },
+      {
+        userId: owner.userId,
+        templateName: name.trim(),
+        templateLanguage: language.trim() || "en",
+        templateBody: body,
+        // Only the slots this template actually declares are sent; trailing
+        // entries left over from a previously-selected template would make
+        // the count wrong.
+        templateVariables: variableSlots.map((_, i) => variables[i] ?? DEFAULT_ORDER[i] ?? "CADRE_NAME"),
+        templateButtons: buttonRows,
+      },
       { onSuccess: () => setEditing(false) },
     );
   };
@@ -174,6 +297,122 @@ function OwnerRow({ owner, available }: { owner: TemplateOwner; available: Avail
                 />
               </div>
             </div>
+            {/* One row per {{n}} the template declares — the count comes from
+                the sync, so the form always asks for exactly the right
+                number and a mismatch (a hard 400 from Fyxo) can't happen. */}
+            <div>
+              <Label className="mb-1">What goes in each variable</Label>
+              <div className="space-y-2">
+                {variableSlots.map((i) => (
+                  <div key={i} className="flex items-center gap-2">
+                    <code className="w-12 shrink-0 rounded bg-slate-100 px-1.5 py-1 text-center text-xs text-slate-700">
+                      {`{{${i + 1}}}`}
+                    </code>
+                    <select
+                      value={variables[i] ?? DEFAULT_ORDER[i] ?? "CADRE_NAME"}
+                      onChange={(e) => {
+                        const next = [...variables];
+                        next[i] = e.target.value as TemplateVariableSource;
+                        setVariables(next);
+                      }}
+                      className="w-full rounded-md border border-slate-300 px-3 py-2 text-sm shadow-sm focus:border-brand-500 focus:outline-none focus:ring-1 focus:ring-brand-500"
+                    >
+                      {VARIABLE_SOURCES.map((v) => (
+                        <option key={v.value} value={v.value}>
+                          {v.label} — e.g. {v.example}
+                        </option>
+                      ))}
+                    </select>
+                  </div>
+                ))}
+              </div>
+              <p className="mt-1 text-xs text-slate-500">
+                {variableSlots.length === 1
+                  ? "This template takes one variable."
+                  : `This template takes ${variableSlots.length} variables.`}{" "}
+                Match them to the approved wording — the order must be exactly what Meta approved, or the send is
+                rejected.
+              </p>
+            </div>
+
+            {/* What each Quick Reply answers with. Shown only when the
+                selected template actually has buttons — a template without
+                them has nothing to configure. */}
+            {buttonRows.length > 0 && (
+              <div>
+                <Label>What each button replies with</Label>
+                <div className="mt-1 space-y-2">
+                  {buttonRows.map((button) => (
+                    <div key={button.label} className="rounded-md border border-slate-200 p-2">
+                      <div className="flex flex-wrap items-center gap-2">
+                        <span className="rounded bg-slate-100 px-2 py-0.5 text-xs font-medium text-slate-700">
+                          {button.label}
+                        </span>
+                        <select
+                          className="flex-1 rounded-md border border-slate-300 px-3 py-2 text-sm"
+                          value={button.action}
+                          onChange={(e) =>
+                            updateButton(button.label, { action: e.target.value as ButtonReplyAction })
+                          }
+                        >
+                          {(Object.keys(ACTION_LABELS) as ButtonReplyAction[]).map((action) => (
+                            <option key={action} value={action}>
+                              {ACTION_LABELS[action]}
+                            </option>
+                          ))}
+                        </select>
+                        {/* Context can be added to ANY button, not just a
+                            custom-message one — it's appended to whatever
+                            the action produces. The + is always available so
+                            a one-off instruction never needs the action to
+                            be changed first. */}
+                        {button.action !== "CUSTOM_TEXT" && (
+                        <button
+                          type="button"
+                          aria-label={`Add a message to the "${button.label}" button`}
+                          title="Add your own message to this button"
+                          onClick={() => toggleContext(button.label)}
+                          className={`flex h-9 w-9 shrink-0 items-center justify-center rounded-md border text-lg leading-none transition ${
+                            hasContext(button)
+                              ? "border-brand-300 bg-brand-50 text-brand-700"
+                              : "border-slate-300 text-slate-500 hover:bg-slate-50 hover:text-slate-800"
+                          }`}
+                        >
+                          {hasContext(button) ? "−" : "+"}
+                        </button>
+                        )}
+                      </div>
+                      {hasContext(button) && (
+                        <>
+                          <Textarea
+                            className="mt-2"
+                            rows={2}
+                            placeholder={
+                              button.action === "NONE"
+                                ? "The message the Cadre receives when they tap this"
+                                : "Extra wording sent after the action's message"
+                            }
+                            value={button.text ?? ""}
+                            onChange={(e) => updateButton(button.label, { text: e.target.value })}
+                          />
+                          {button.action !== "NONE" && button.action !== "CUSTOM_TEXT" && (
+                            <p className="mt-1 text-xs text-slate-400">
+                              Sent after the {ACTION_LABELS[button.action].toLowerCase()}, as part of the same
+                              reply.
+                            </p>
+                          )}
+                        </>
+                      )}
+                    </div>
+                  ))}
+                </div>
+                <p className="mt-1 text-xs text-slate-500">
+                  Sent as a normal WhatsApp reply the moment the Cadre taps. A button set to &ldquo;Do
+                  nothing&rdquo; is left to the Fyxo flow to answer.
+                </p>
+              </div>
+            )}
+
             <div>
               <Label htmlFor={`body-${owner.userId}`}>Approved body text (optional)</Label>
               <Textarea
@@ -202,6 +441,36 @@ function OwnerRow({ owner, available }: { owner: TemplateOwner; available: Avail
                 </p>
               );
             })()}
+
+            {/* The three fields above describe the send in pieces — a name, a
+                body, a list of actions — and none of them shows what a Cadre
+                actually experiences. Drawn as one flow it's obvious, and it
+                redraws as the actions and wording are edited, so a wrong
+                action is caught here rather than after a thousand sends. */}
+            <div>
+              <div className="flex flex-wrap items-center justify-between gap-2">
+                <Label>How this message is sent</Label>
+                <button
+                  type="button"
+                  onClick={() => setFlowOpen((v) => !v)}
+                  className="text-xs font-medium text-brand-600 hover:underline"
+                >
+                  {flowOpen ? "Hide preview" : "Show preview"}
+                </button>
+              </div>
+              {flowOpen && (
+                <div className="mt-2">
+                  <TemplateFlowDiagram
+                    templateName={name || owner.templateName || "polios"}
+                    buttons={buttonRows}
+                    bodyPreview={body || available.find((t) => t.name === name)?.body || undefined}
+                  />
+                  <p className="mt-1 text-xs text-slate-500">
+                    Follow a branch to read what that button replies with. Edits above redraw it straight away.
+                  </p>
+                </div>
+              )}
+            </div>
 
             {errorMessage(assign.error) && <p className="text-sm text-red-600">{errorMessage(assign.error)}</p>}
 

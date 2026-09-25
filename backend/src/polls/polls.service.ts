@@ -6,6 +6,7 @@ import { RegionsService } from "../regions/regions.service";
 import { NotificationsService } from "../notifications/notifications.service";
 import { FyxoWhatsAppService } from "../fyxo-whatsapp/fyxo-whatsapp.service";
 import { FYXO_TEMPLATES } from "../fyxo-whatsapp/templates";
+import { MessageLogService } from "../message-log/message-log.service";
 
 /**
  * Polls follow the exact same two-step shape as Tasks (see TasksService):
@@ -29,6 +30,7 @@ export class PollsService {
     private readonly regionsService: RegionsService,
     private readonly notificationsService: NotificationsService,
     private readonly fyxoWhatsApp: FyxoWhatsAppService,
+    private readonly messageLog: MessageLogService,
   ) {}
 
   async create(dto: CreatePollDto, user: AuthenticatedUser) {
@@ -44,10 +46,51 @@ export class PollsService {
       }
     }
 
+    // The template's own Quick Replies are the answers. Copied onto the poll
+    // now rather than read back at send time, so a poll keeps meaning what it
+    // meant even if that template is later edited or un-approved.
+    const template = await this.prisma.availableTemplate.findUnique({ where: { name: dto.templateName } });
+    if (!template) {
+      throw new BadRequestException(`Template "${dto.templateName}" is not in the synced list — run Sync templates first`);
+    }
+    if (template.status && template.status !== "APPROVED") {
+      throw new BadRequestException(`Template "${template.name}" is ${template.status}; WhatsApp will refuse it`);
+    }
+    if (template.buttons.length < 2) {
+      throw new BadRequestException(
+        `Template "${template.name}" has ${template.buttons.length} button(s) — a poll needs at least 2 for the Cadre to choose between`,
+      );
+    }
+    // A poll template carries exactly one dynamic value: the question. A
+    // template wanting more has slots PoliOS cannot fill from a poll, and
+    // they would go out as em dashes in the middle of the Cadre's message.
+    if (template.variables !== null && template.variables > 1) {
+      throw new BadRequestException(
+        `Template "${template.name}" expects ${template.variables} variables — a poll template must take exactly one, the question itself`,
+      );
+    }
+
+    // A task the poll hangs off must be one this user can actually see;
+    // otherwise the poll becomes a way to probe for task ids.
+    if (dto.taskId) {
+      const task = await this.prisma.task.findUnique({
+        where: { id: dto.taskId },
+        select: { assignedTo: { select: { regionId: true } } },
+      });
+      if (!task) throw new NotFoundException("Task not found");
+      if (user.role !== "SUPER_ADMIN") {
+        const withinScope = await this.regionsService.isWithinScope(user.regionId, task.assignedTo.regionId);
+        if (!withinScope) throw new NotFoundException("Task not found");
+      }
+    }
+
     const poll = await this.prisma.poll.create({
       data: {
         question: dto.question,
-        options: dto.options,
+        options: template.buttons,
+        templateName: template.name,
+        templateLanguage: dto.templateLanguage ?? template.language,
+        taskId: dto.taskId,
         targetRegionIds: dto.regionIds,
         deadline: dto.deadline,
         createdById: user.id,
@@ -149,22 +192,74 @@ export class PollsService {
 
     const cadreUsers = await this.prisma.user.findMany({ where: { id: { in: cadres.map((c) => c.id) } }, select: { id: true, name: true, phone: true } });
 
-    // Fixed A/B/C body slots regardless of how many real options this poll
-    // has — see FYXO_TEMPLATES.POLL.
-    const optionText = (i: number) => poll.options[i] ?? "—";
+    // The template chosen when the poll was created; its buttons are the
+    // answers. Older polls have none and fall back to the generic one.
+    const templateName = poll.templateName ?? FYXO_TEMPLATES.POLL.name;
+    const templateLanguage = poll.templateLanguage ?? FYXO_TEMPLATES.POLL.language;
+    const declared = await this.prisma.availableTemplate.findUnique({
+      where: { name: templateName },
+      select: { variables: true },
+    });
+
+    // {{1}} is the poll question, and nothing else is.
+    //
+    // Fyxo's `variables` is a positional array posted straight to
+    // POST /v1/messages, so variables[0] IS {{1}} — there are no named
+    // parameters to get wrong. It previously led with the Cadre's name,
+    // which on a one-variable template meant the recipient read their own
+    // name where the question belonged.
+    //
+    // The Cadre's name is deliberately NOT passed: a poll template greets
+    // generically and asks one thing. Any slot beyond the first gets an em
+    // dash rather than failing the send, though create() blocks
+    // multi-variable templates so that should not arise.
+    const variablesFor = () => {
+      const count = Math.max(1, declared?.variables ?? 1);
+      const values = [poll.question];
+      return Array.from({ length: count }, (_, i) => (values[i] ?? "—").replace(/\s+/g, " ").trim() || "—");
+    };
 
     const results = await Promise.all(
       cadreUsers.map(async (cadre) => {
         const idempotencyKey = `poll-${poll.id}-${cadre.id}`;
+        const variables = variablesFor();
         const result = await this.fyxoWhatsApp.sendTemplateMessage({
           to: cadre.phone,
-          templateName: FYXO_TEMPLATES.POLL.name,
-          templateLanguage: FYXO_TEMPLATES.POLL.language,
-          variables: [cadre.name, poll.question, optionText(0), optionText(1), optionText(2)],
+          templateName,
+          templateLanguage,
+          variables,
           idempotencyKey,
         });
-        return { cadre, result };
+        return { cadre, result, variables };
       }),
+    );
+
+    // Logged like any other send. This is what makes answers capturable at
+    // all: the button-tap router correlates an inbound tap to the
+    // recipient's most recent logged message, so a poll that never appeared
+    // in the log could never be matched to a tap.
+    await Promise.all(
+      results.map(({ cadre, result, variables }) =>
+        this.messageLog
+          .record({
+            cadreId: cadre.id,
+            cadreName: cadre.name,
+            cadrePhone: cadre.phone,
+            message: poll.question,
+            pollId: poll.id,
+            taskId: poll.taskId ?? undefined,
+            assignedById: user.id,
+            assignedByName: user.name,
+            kind: "POLL",
+            templateName,
+            variables,
+            channel: "FYXO",
+            success: result.success,
+            providerMessageId: result.messageId ?? undefined,
+            failureReason: result.error ?? undefined,
+          })
+          .catch(() => undefined),
+      ),
     );
 
     await this.prisma.$transaction([
@@ -309,6 +404,38 @@ export class PollsService {
     }
 
     const recipients = poll.recipients;
+
+    // The real answers: button taps captured against this poll's messages.
+    // PollRecipient.selectedOption predates tap capture and is never written,
+    // so reading only that reported every poll as unanswered. Taps win; the
+    // old column is still honoured for any row that has one.
+    const taps = await this.prisma.templateResponse.findMany({
+      where: { messageLog: { pollId: poll.id }, responseType: "BUTTON" },
+      orderBy: { respondedAt: "desc" },
+      select: { cadreId: true, label: true, action: true, respondedAt: true },
+    });
+
+    // Newest tap per Cadre wins — changing your mind is answering again, not
+    // answering twice.
+    const answerByCadre = new Map<string, { optionIndex: number; label: string; at: Date }>();
+    for (const tap of taps) {
+      if (!tap.cadreId || answerByCadre.has(tap.cadreId)) continue;
+      const label = (tap.label ?? tap.action ?? "").trim();
+      const optionIndex = poll.options.findIndex((o) => o.toLowerCase() === label.toLowerCase());
+      // A tap whose label matches no option still counts as a response — it
+      // just can't be tallied against a specific one.
+      answerByCadre.set(tap.cadreId, { optionIndex, label, at: tap.respondedAt });
+    }
+
+    /** What this recipient answered, tap first, stored column second. */
+    const answerFor = (r: (typeof recipients)[number]) => {
+      const tap = r.cadreId ? answerByCadre.get(r.cadreId) : undefined;
+      if (tap) return { index: tap.optionIndex, label: tap.label, at: tap.at };
+      if (r.selectedOption !== null) {
+        return { index: r.selectedOption, label: poll.options[r.selectedOption] ?? "—", at: r.answeredAt };
+      }
+      return null;
+    };
     // "Sent" here means the outbound API call succeeded (SENT or, once
     // wired, ANSWERED) — distinct from FAILED, where it didn't go out at
     // all. answered/noResponse are both counted against sent, not
@@ -316,7 +443,7 @@ export class PollsService {
     // respond" alongside someone who genuinely received it and stayed quiet.
     const sent = recipients.filter((r) => r.status === "SENT" || r.status === "ANSWERED").length;
     const failed = recipients.filter((r) => r.status === "FAILED").length;
-    const answered = recipients.filter((r) => r.selectedOption !== null).length;
+    const answered = recipients.filter((r) => answerFor(r) !== null).length;
     const noResponse = sent - answered;
 
     const kpis = {
@@ -333,36 +460,50 @@ export class PollsService {
     // tally, just shown without a name in `respondents` below.
     const tally = poll.options.map((option, i) => ({
       option,
-      votes: recipients.filter((r) => r.selectedOption === i).length,
+      votes: recipients.filter((r) => answerFor(r)?.index === i).length,
     }));
 
-    const respondents = recipients.map((r) => ({
-      id: r.id,
-      cadreName: r.cadre?.name ?? "Deleted user",
-      area: r.cadre ? `${r.cadre.region.name} (${r.cadre.region.type})` : "—",
-      status: r.status,
-      selectedOption: r.selectedOption,
-      sentAt: r.sentAt,
-      answeredAt: r.answeredAt,
-    }));
+    const respondents = recipients.map((r) => {
+      const answer = answerFor(r);
+      return {
+        id: r.id,
+        cadreName: r.cadre?.name ?? "Deleted user",
+        area: r.cadre ? `${r.cadre.region.name} (${r.cadre.region.type})` : "—",
+        status: r.status,
+        selectedOption: answer && answer.index >= 0 ? answer.index : null,
+        // The label as tapped, so an answer that matches no known option is
+        // still readable rather than collapsing to a dash.
+        answerLabel: answer?.label ?? null,
+        sentAt: r.sentAt,
+        answeredAt: answer?.at ?? r.answeredAt,
+      };
+    });
 
     type TimelineEvent = { type: "SENT" | "ANSWERED"; cadreName: string; at: Date; detail?: string };
     const timeline: TimelineEvent[] = [];
     for (const r of recipients) {
       const name = r.cadre?.name ?? "Deleted user";
       if (r.sentAt) timeline.push({ type: "SENT", cadreName: name, at: r.sentAt });
-      if (r.answeredAt) {
-        timeline.push({
-          type: "ANSWERED",
-          cadreName: name,
-          at: r.answeredAt,
-          detail: r.selectedOption !== null ? poll.options[r.selectedOption] : undefined,
-        });
+      const answer = answerFor(r);
+      if (answer?.at) {
+        timeline.push({ type: "ANSWERED", cadreName: name, at: answer.at, detail: answer.label });
       }
     }
     timeline.sort((a, b) => b.at.getTime() - a.at.getTime());
 
-    return { id: poll.id, question: poll.question, options: poll.options, kpis, tally, respondents, timeline };
+    return {
+      id: poll.id,
+      question: poll.question,
+      options: poll.options,
+      templateName: poll.templateName,
+      taskId: poll.taskId,
+      createdAt: poll.createdAt,
+      deadline: poll.deadline,
+      kpis,
+      tally,
+      respondents,
+      timeline,
+    };
   }
 
   /**
@@ -384,15 +525,53 @@ export class PollsService {
       if (!withinScope) throw new ForbiddenException("This poll is outside your area");
     }
 
-    const optionText = (i: number) => recipient.poll.options[i] ?? "—";
+    // The poll's own template, exactly as allocate() sends it. Hardcoding the
+    // generic one here meant a retry was a DIFFERENT message from the
+    // original — and pointed at a template that isn't even in the catalogue.
+    const templateName = recipient.poll.templateName ?? FYXO_TEMPLATES.POLL.name;
+    const templateLanguage = recipient.poll.templateLanguage ?? FYXO_TEMPLATES.POLL.language;
+    const declared = await this.prisma.availableTemplate.findUnique({
+      where: { name: templateName },
+      select: { variables: true },
+    });
+    // Same rule as the original send: {{1}} is the question, never a name.
+    const count = Math.max(1, declared?.variables ?? 1);
+    const values = [recipient.poll.question];
+    const variables = Array.from({ length: count }, (_, i) =>
+      (values[i] ?? "—").replace(/\s+/g, " ").trim() || "—",
+    );
+
     const idempotencyKey = `poll-${recipient.pollId}-${recipient.cadreId}-retry-${Date.now()}`;
     const result = await this.fyxoWhatsApp.sendTemplateMessage({
       to: recipient.cadre.phone,
-      templateName: FYXO_TEMPLATES.POLL.name,
-      templateLanguage: FYXO_TEMPLATES.POLL.language,
-      variables: [recipient.cadre.name, recipient.poll.question, optionText(0), optionText(1), optionText(2)],
+      templateName,
+      templateLanguage,
+      variables,
       idempotencyKey,
     });
+
+    // Logged like the original send, so a retry that is answered correlates
+    // to the poll the same way — without this the tap would attribute to
+    // whatever older message happened to be the newest one on record.
+    await this.messageLog
+      .record({
+        cadreId: recipient.cadre.id,
+        cadreName: recipient.cadre.name,
+        cadrePhone: recipient.cadre.phone,
+        message: recipient.poll.question,
+        pollId: recipient.pollId,
+        taskId: recipient.poll.taskId ?? undefined,
+        assignedById: user.id,
+        assignedByName: user.name,
+        kind: "RETRY",
+        templateName,
+        variables,
+        channel: "FYXO",
+        success: result.success,
+        providerMessageId: result.messageId ?? undefined,
+        failureReason: result.error ?? undefined,
+      })
+      .catch(() => undefined);
 
     return this.prisma.pollRecipient.update({
       where: { id: recipientId },

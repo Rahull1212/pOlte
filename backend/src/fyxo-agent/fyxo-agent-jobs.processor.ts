@@ -53,7 +53,12 @@ export class FyxoAgentJobsProcessor extends WorkerHost {
           this.logger.warn(`${eventType} payload missing a correlatable message id: ${JSON.stringify(body).slice(0, 300)}`);
           return;
         }
-        await this.tasksService.handleFyxoStatusUpdate(status.messageId, eventType);
+        if (status.error) {
+          // Meta's refusal reason — logged loudly as well as stored, because
+          // it is the one line that explains why a Cadre got nothing.
+          this.logger.warn(`${eventType} for ${status.messageId}: ${status.error}`);
+        }
+        await this.tasksService.handleFyxoStatusUpdate(status.messageId, eventType, new Date(), status.error);
         return;
       }
 

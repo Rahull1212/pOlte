@@ -3,12 +3,14 @@ import { RegionType } from "../shared-types";
 import { PrismaService } from "../prisma/prisma.service";
 import { RegionsService } from "../regions/regions.service";
 import { AuthenticatedUser } from "../auth/types";
+import { MessageLogService } from "../message-log/message-log.service";
 
 @Injectable()
 export class AnalyticsService {
   constructor(
     private readonly prisma: PrismaService,
     private readonly regionsService: RegionsService,
+    private readonly messageLog: MessageLogService,
   ) {}
 
   /**
@@ -69,7 +71,7 @@ export class AnalyticsService {
     };
   }
 
-  /** District/Mandal/Booth progress bars, ranked best-to-worst by achievement %. */
+  /** District/Constituency/Booth progress bars, ranked best-to-worst by achievement %. */
   async regionProgress(campaignId: string, regionType: RegionType, user: AuthenticatedUser) {
     const { isSuperAdmin, regionIds } = await this.scope(user);
 
@@ -152,7 +154,7 @@ export class AnalyticsService {
       ? { campaign: { status: "ACTIVE" as const }, parentAllocationId: null }
       : { campaign: { status: "ACTIVE" as const }, regionId: user.regionId };
 
-    const [topAllocations, spentAgg, taskGroups, grievanceGroups, pendingExpenseAgg, campaigns] = await Promise.all([
+    const [topAllocations, spentAgg, taskGroups, grievanceGroups, pendingExpenseAgg, campaigns, communication] = await Promise.all([
       this.prisma.targetAllocation.findMany({
         where: topAllocWhere,
         select: { campaignId: true, target: true, achievedCount: true, allocatedBudget: true },
@@ -186,6 +188,11 @@ export class AnalyticsService {
           : { status: "ACTIVE", allocations: { some: { regionId: user.regionId } } },
         select: { id: true, name: true, status: true, priority: true },
       }),
+      // Straight from the message log, the same rows the Message Log page
+      // draws — and scoped the same way it scopes them, so a number here
+      // always matches what that page shows rather than being a second
+      // count that drifts. Nothing is stored; see communicationStats().
+      this.messageLog.communicationStats(isSuperAdmin ? {} : { assignedById: user.id }),
     ]);
 
     const target = topAllocations.reduce((s, a) => s + a.target, 0);
@@ -233,6 +240,7 @@ export class AnalyticsService {
       grievanceResolutionPct: totalGrievances > 0 ? Math.round((resolvedGrievances / totalGrievances) * 100) : 0,
       pendingExpenses: { count: pendingExpenseAgg._count, amount: Number(pendingExpenseAgg._sum.amount ?? 0) },
       campaigns: campaignsWithProgress,
+      communication,
     };
 
     if (isSuperAdmin) {

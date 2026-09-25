@@ -7,6 +7,7 @@ import { randomUUID } from "node:crypto";
 import { Public } from "../common/decorators/public.decorator";
 import { PrismaService } from "../prisma/prisma.service";
 import { verifyFyxoSignature } from "./verify-signature.util";
+import { TaskDetailsService } from "./task-details.service";
 
 /**
  * Receives inbound events from Fyxo Connect (Part 4/5 of the spec):
@@ -25,6 +26,7 @@ export class FyxoAgentWebhookController {
   constructor(
     @InjectQueue("fyxo-agent-jobs") private readonly queue: Queue,
     private readonly prisma: PrismaService,
+    private readonly taskDetails: TaskDetailsService,
   ) {}
 
   @Public()
@@ -54,7 +56,17 @@ export class FyxoAgentWebhookController {
     // messageId nor waId (e.g. a shape we don't recognize), where dedup
     // isn't meaningful anyway.
     const data = (body.data ?? {}) as Record<string, unknown>;
-    const correlationId = (data.messageId ?? data.waId ?? body.id) as string | undefined;
+    // A button tap carries NO messageId (confirmed against a live payload on
+    // 2026-09-15), so keying dedup on waId alone made every tap after the
+    // first from the same person look like a redelivery and get dropped —
+    // "tapped View Task, then Contact Admin" only ever recorded the first.
+    // Falling back to waId + when + what keeps real redeliveries (identical
+    // payloads) deduped while letting two distinct taps through.
+    const correlationId = (data.messageId ??
+      (data.waId
+        ? [data.waId, body.sentAt ?? data.sentAt ?? "", data.text ?? ""].join("|")
+        : undefined) ??
+      body.id) as string | undefined;
     const deliveryId = correlationId ? `${eventType ?? "unknown"}-${correlationId}` : `${eventType ?? "unknown"}-${randomUUID()}`;
 
     // Dedup: the delivery id is the primary key, so a redelivery of the same
@@ -75,5 +87,62 @@ export class FyxoAgentWebhookController {
     );
 
     return { received: true };
+  }
+
+  /**
+   * API.md §11 — Fyxo calls this when a Cadre taps a template button, and
+   * sends whatever text we return as a free-form WhatsApp reply (free, since
+   * the tap itself opened the 24-hour window).
+   *
+   * This is the endpoint that makes "Task Details" work, and the reason task
+   * text lives in Postgres rather than a spreadsheet: it's read at the moment
+   * of the tap, so there is nothing to keep in sync.
+   *
+   * Unlike the webhook above this answers inline rather than queueing — §11
+   * gives us 8 seconds and the reply *is* the response body, so there is
+   * nothing to defer.
+   */
+  @Public()
+  @Post("details")
+  @HttpCode(200)
+  async details(@Req() req: RawBodyRequest<Request>, @Headers("x-fyxo-signature") signature: string | undefined) {
+    // The details step carries its own secret in Fyxo's flow builder; most
+    // installs set it to the same value as the webhook secret, so that's the
+    // fallback rather than refusing to work until a second variable is set.
+    const secret = process.env.FYXO_DETAILS_SECRET || process.env.FYXO_WEBHOOK_SECRET;
+    if (secret) {
+      if (!req.rawBody || !verifyFyxoSignature(req.rawBody, signature, secret)) {
+        // Logged loudly: a rejected call is otherwise invisible here, and
+        // from the Cadre's side it looks identical to the endpoint being
+        // down — they just get the step's fallback text. The usual cause is
+        // the secret on the flow step not matching the one configured here
+        // (they are set in two different places, and a workspace switch
+        // changes the webhook secret but not the flow step's).
+        this.logger.error(
+          `Details request REJECTED: signature did not verify. ` +
+            `Check the secret on the Fyxo flow step matches ` +
+            `${process.env.FYXO_DETAILS_SECRET ? "FYXO_DETAILS_SECRET" : "FYXO_WEBHOOK_SECRET"} in .env. ` +
+            `(signature header ${signature ? "present" : "MISSING"})`,
+        );
+        // §11: "without it, anyone who learns your URL can read task content
+        // by phone number" — so this refuses rather than degrading.
+        throw new UnauthorizedException("Invalid Fyxo signature");
+      }
+    } else {
+      this.logger.warn("No Fyxo details/webhook secret set — answering a details request unverified");
+    }
+
+    const body = (req.body ?? {}) as { waId?: string; reference?: string; text?: string };
+    this.logger.log(`Details requested: waId=${body.waId ?? "?"} reference=${body.reference ?? "(none)"}`);
+
+    try {
+      return { text: await this.taskDetails.buildReply(body) };
+    } catch (err) {
+      // Returning no `text` makes Fyxo send the step's fallback, which is the
+      // right outcome for the Cadre — but log loudly, because it means the
+      // lookup broke rather than the task being missing.
+      this.logger.error(`Details lookup failed: ${(err as Error).message}`);
+      return {};
+    }
   }
 }

@@ -12,6 +12,14 @@ import { AuthenticatedUser } from "../auth/types";
 export class PollsController {
   constructor(private readonly pollsService: PollsService) {}
 
+  // Both roles can write a poll, but they reach different people: a Super
+  // Admin can target any area, while an Admin is confined to their own
+  // subtree — create() checks every requested region against the caller's
+  // scope, so this is not merely a UI affordance.
+  //
+  // The Super-Admin-writes / Admin-allocates split still holds for polls the
+  // Super Admin creates; this adds the case where an Admin asks their own
+  // Cadres something directly, without waiting on anyone.
   @Post()
   @Roles("SUPER_ADMIN", "ADMIN")
   create(@Body(new ZodValidationPipe(createPollSchema)) dto: CreatePollDto, @CurrentUser() user: AuthenticatedUser) {

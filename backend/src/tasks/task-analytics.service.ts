@@ -10,7 +10,7 @@ export interface TaskAnalyticsFilters {
   dateFrom?: string;
   dateTo?: string;
   districtId?: string;
-  mandalId?: string;
+  constituencyId?: string;
   status?: string;
   priority?: string;
   taskType?: "BULK" | "INDIVIDUAL";
@@ -71,14 +71,14 @@ export class TaskAnalyticsService {
   /**
    * The region set a query is allowed to touch: the caller's own authorized
    * subtree (undefined = SUPER_ADMIN, unrestricted), narrowed further by a
-   * District/Mandal filter if one was given. A filter for a region outside
+   * District/Constituency filter if one was given. A filter for a region outside
    * the caller's own scope intersects down to nothing rather than escaping
-   * it — this is what makes the District/Mandal filters safe to trust from
+   * it — this is what makes the District/Constituency filters safe to trust from
    * the frontend without a second authorization layer.
    */
   private async allowedRegionIds(user: AuthenticatedUser, filters: TaskAnalyticsFilters): Promise<string[] | undefined> {
     const { regionIds } = await this.scope(user);
-    const filterRegionId = filters.mandalId ?? filters.districtId;
+    const filterRegionId = filters.constituencyId ?? filters.districtId;
     if (!filterRegionId) return regionIds;
 
     const filterDescendants = await this.regionsService.descendantIds(filterRegionId);
@@ -91,11 +91,11 @@ export class TaskAnalyticsService {
   }
 
   private resolveHierarchyLabels(regionId: string | null | undefined, regionById: Map<string, RegionNode>) {
-    const labels: { district: string | null; mandal: string | null } = { district: null, mandal: null };
+    const labels: { district: string | null; constituency: string | null } = { district: null, constituency: null };
     let current = regionId ? regionById.get(regionId) : undefined;
     while (current) {
       if (current.type === "DISTRICT") labels.district = current.name;
-      else if (current.type === "MANDAL") labels.mandal = current.name;
+      else if (current.type === "CONSTITUENCY") labels.constituency = current.name;
       current = current.parentId ? regionById.get(current.parentId) : undefined;
     }
     return labels;
@@ -206,7 +206,7 @@ export class TaskAnalyticsService {
           cadreId,
           name: group[0].assignedTo.name,
           district: labels.district,
-          mandal: labels.mandal,
+          constituency: labels.constituency,
           tasksAssigned: summary.total,
           tasksCompleted: summary.completed,
           pending: summary.pending,
@@ -218,7 +218,7 @@ export class TaskAnalyticsService {
       .sort((a, b) => b.completionPct - a.completionPct);
   }
 
-  private buildGroupedByLabel(tasks: ScopedTask[], regionById: Map<string, RegionNode>, level: "district" | "mandal") {
+  private buildGroupedByLabel(tasks: ScopedTask[], regionById: Map<string, RegionNode>, level: "district" | "constituency") {
     const groups = new Map<string, ScopedTask[]>();
     const cadresByGroup = new Map<string, Set<string>>();
     for (const t of tasks) {
@@ -247,7 +247,7 @@ export class TaskAnalyticsService {
       avgCompletionHours: this.avgCompletionHours(tasks),
       taskWise: this.buildTaskWise(tasks),
       cadreWise: this.buildCadreWise(tasks, regionById),
-      mandalWise: this.buildGroupedByLabel(tasks, regionById, "mandal").map(({ name, ...g }) => ({ mandal: name, ...g })),
+      constituencyWise: this.buildGroupedByLabel(tasks, regionById, "constituency").map(({ name, ...g }) => ({ constituency: name, ...g })),
       districtWise: this.buildGroupedByLabel(tasks, regionById, "district").map(({ name, ...g }) => ({ district: name, ...g })),
     };
   }
@@ -308,8 +308,8 @@ export class TaskAnalyticsService {
     return (await this.buildBundle(user, filters)).cadreWise;
   }
 
-  async getMandalAnalytics(user: AuthenticatedUser, filters: TaskAnalyticsFilters = {}) {
-    return (await this.buildBundle(user, filters)).mandalWise;
+  async getConstituencyAnalytics(user: AuthenticatedUser, filters: TaskAnalyticsFilters = {}) {
+    return (await this.buildBundle(user, filters)).constituencyWise;
   }
 
   /** Only meaningful when the caller's scope spans multiple Districts — a single-District Admin just sees one row, which is still correct. */
@@ -318,7 +318,7 @@ export class TaskAnalyticsService {
   }
 
   async getCharts(user: AuthenticatedUser, filters: TaskAnalyticsFilters = {}) {
-    const { tasks, overview, cadreWise, mandalWise } = await this.buildBundle(user, filters);
+    const { tasks, overview, cadreWise, constituencyWise } = await this.buildBundle(user, filters);
 
     const communicationFunnel = [
       { stage: "Allocated", count: overview.total },
@@ -356,9 +356,9 @@ export class TaskAnalyticsService {
       communicationFunnel,
       deliveryPct: overview.messagesSent > 0 ? Math.round((overview.delivered / overview.messagesSent) * 100) : 0,
       responsePct: overview.delivered > 0 ? Math.round((overview.responded / overview.delivered) * 100) : 0,
-      completionByMandal: mandalWise.map((m) => ({ name: m.mandal, completionPct: m.completionPct })),
+      completionByConstituency: constituencyWise.map((m) => ({ name: m.constituency, completionPct: m.completionPct })),
       cadrePerformance: cadreWise.slice(0, 10).map((c) => ({ name: c.name, completionPct: c.completionPct, completed: c.tasksCompleted, total: c.tasksAssigned })),
-      overdueByMandal: mandalWise.filter((m) => m.overdue > 0).map((m) => ({ name: m.mandal, overdue: m.overdue })),
+      overdueByConstituency: constituencyWise.filter((m) => m.overdue > 0).map((m) => ({ name: m.constituency, overdue: m.overdue })),
       tasksByPriority: Array.from(priorityCounts.entries()).map(([name, value]) => ({ name, value })),
       tasksCreatedOverTime: byDate(createdByDay),
       completionTrend: byDate(completedByDay),
@@ -401,15 +401,15 @@ export class TaskAnalyticsService {
   }
 
   async generateAiInsights(user: AuthenticatedUser, filters: TaskAnalyticsFilters = {}) {
-    const { overview, avgCompletionHours, cadreWise, mandalWise, districtWise } = await this.buildBundle(user, filters);
+    const { overview, avgCompletionHours, cadreWise, constituencyWise, districtWise } = await this.buildBundle(user, filters);
     const actionCenter = await this.getActionCenter(user, filters);
 
     const bundle = {
       overview: { ...overview, avgCompletionHours },
       topCadres: cadreWise.slice(0, 5),
       bottomCadres: [...cadreWise].sort((a, b) => a.completionPct - b.completionPct).slice(0, 5),
-      topMandals: mandalWise.slice(0, 5),
-      bottomMandals: [...mandalWise].sort((a, b) => a.completionPct - b.completionPct).slice(0, 5),
+      topConstituencies: constituencyWise.slice(0, 5),
+      bottomConstituencies: [...constituencyWise].sort((a, b) => a.completionPct - b.completionPct).slice(0, 5),
       districts: districtWise,
       tasksAtRisk: actionCenter.atRisk.slice(0, 10),
       whatsappFailures: actionCenter.whatsappFailures.slice(0, 10),
@@ -421,11 +421,11 @@ export class TaskAnalyticsService {
   }
 
   async askAi(user: AuthenticatedUser, question: string, filters: TaskAnalyticsFilters = {}) {
-    const { overview, avgCompletionHours, cadreWise, mandalWise, districtWise, taskWise } = await this.buildBundle(user, filters);
+    const { overview, avgCompletionHours, cadreWise, constituencyWise, districtWise, taskWise } = await this.buildBundle(user, filters);
     const bundle = {
       overview: { ...overview, avgCompletionHours },
       cadres: cadreWise.slice(0, 30),
-      mandals: mandalWise,
+      constituencies: constituencyWise,
       districts: districtWise,
       tasks: taskWise.slice(0, 30),
     };

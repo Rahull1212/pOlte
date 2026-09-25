@@ -40,7 +40,7 @@ export class EscalationProcessor extends WorkerHost {
     }
 
     // 2. Escalate tasks that have been overdue for more than 48h to the
-    //    assigner's own parent in the hierarchy (Booth -> Mandal -> ...).
+    //    assigner's own parent in the hierarchy (Booth -> Constituency -> ...).
     const longOverdue = await this.prisma.task.findMany({
       where: { status: "OVERDUE", deadline: { lt: new Date(now.getTime() - ESCALATION_THRESHOLD_MS) } },
       include: { assignedBy: { select: { parentUserId: true } } },

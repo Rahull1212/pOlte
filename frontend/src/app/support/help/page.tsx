@@ -6,12 +6,12 @@ const FAQS: { question: string; answer: string }[] = [
   {
     question: "What do the three roles (Super Admin, Admin, Cadre) mean?",
     answer:
-      "Super Admin has full organization-wide control. Admin manages one area of the region hierarchy (a district, mandal, or booth) and the Cadres within it. Cadre executes tasks and submits progress/expenses/citizen registrations on the ground — Cadres don't manage other users.",
+      "Super Admin has full organization-wide control. Admin manages one area of the region hierarchy (a district, constituency, or booth) and the Cadres within it. Cadre executes tasks and submits progress/expenses/citizen registrations on the ground — Cadres don't manage other users.",
   },
   {
     question: "How do I create a campaign and assign targets?",
     answer:
-      "Only a Super Admin can create a campaign (Campaigns → + New Campaign). Once created, targets and budget are split down the region hierarchy: the Super Admin allocates to Districts, District Admins split further to Mandals, and so on, down to individual Cadres as Tasks.",
+      "Only a Super Admin can create a campaign (Campaigns → + New Campaign). Once created, targets and budget are split down the region hierarchy: the Super Admin allocates to Districts, District Admins split further to Constituencies, and so on, down to individual Cadres as Tasks.",
   },
   {
     question: "Why can't I edit a region/area?",

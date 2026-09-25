@@ -3,10 +3,10 @@ import { NotificationsController } from "./notifications.controller";
 import { NotificationsService } from "./notifications.service";
 import { WhatsAppApiModule } from "../whatsapp-api/whatsapp-api.module";
 import { FyxoWhatsAppModule } from "../fyxo-whatsapp/fyxo-whatsapp.module";
-import { GoogleSheetsModule } from "../google-sheets/google-sheets.module";
+import { MessageLogModule } from "../message-log/message-log.module";
 
 @Module({
-  imports: [WhatsAppApiModule, FyxoWhatsAppModule, GoogleSheetsModule],
+  imports: [WhatsAppApiModule, FyxoWhatsAppModule, MessageLogModule],
   controllers: [NotificationsController],
   providers: [NotificationsService],
   exports: [NotificationsService],

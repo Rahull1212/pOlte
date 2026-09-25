@@ -18,25 +18,47 @@ async function main() {
     ),
   );
 
-  const mandalsByDistrict: Record<string, { id: string; name: string }[]> = {};
+  // A handful of real Assembly Constituencies with their official ECI
+  // numbers — enough to demo. prisma/import-eci-regions.ts loads all 119.
+  const AC_BY_DISTRICT: Record<string, { name: string; no: string }[]> = {
+    Hyderabad: [
+      { name: "Khairatabad", no: "60" },
+      { name: "Jubilee Hills", no: "61" },
+    ],
+    Warangal: [
+      { name: "Narsampet", no: "103" },
+      { name: "Parkal", no: "104" },
+    ],
+  };
+
+  const constituenciesByDistrict: Record<string, { id: string; name: string }[]> = {};
   for (const district of districts) {
-    const mandals = await Promise.all(
-      [`${district.name} Mandal 1`, `${district.name} Mandal 2`].map((name) =>
-        prisma.region.create({ data: { name, type: "MANDAL", parentId: district.id } }),
+    const constituencies = await Promise.all(
+      AC_BY_DISTRICT[district.name].map((ac) =>
+        prisma.region.create({
+          data: { name: ac.name, number: ac.no, type: "CONSTITUENCY", parentId: district.id },
+        }),
       ),
     );
-    mandalsByDistrict[district.id] = mandals;
+    constituenciesByDistrict[district.id] = constituencies;
   }
 
-  const boothsByMandal: Record<string, { id: string; name: string }[]> = {};
-  for (const mandals of Object.values(mandalsByDistrict)) {
-    for (const mandal of mandals) {
+  const boothsByConstituency: Record<string, { id: string; name: string }[]> = {};
+  for (const constituencies of Object.values(constituenciesByDistrict)) {
+    for (const constituency of constituencies) {
       const booths = await Promise.all(
-        [`${mandal.name} Booth 1`, `${mandal.name} Booth 2`].map((name) =>
-          prisma.region.create({ data: { name, type: "BOOTH", parentId: mandal.id } }),
+        [1, 2].map((n) =>
+          prisma.region.create({
+            data: {
+              name: `Government Primary School, ${constituency.name} — Room ${n}`,
+              number: String(n),
+              type: "BOOTH",
+              parentId: constituency.id,
+            },
+          }),
         ),
       );
-      boothsByMandal[mandal.id] = booths;
+      boothsByConstituency[constituency.id] = booths;
     }
   }
 
@@ -91,23 +113,23 @@ async function main() {
       },
     });
 
-    for (const mandal of mandalsByDistrict[district.id]) {
-      const mandalAdmin = await prisma.user.create({
+    for (const constituency of constituenciesByDistrict[district.id]) {
+      const constituencyAdmin = await prisma.user.create({
         data: {
           name: nextName(),
           phone: nextPhone(),
           passwordHash: defaultPassword,
           role: "ADMIN",
-          regionId: mandal.id,
+          regionId: constituency.id,
           parentUserId: districtAdmin.id,
         },
       });
 
       await prisma.eventParticipant.create({
-        data: { eventId: districtEvent.id, userId: mandalAdmin.id },
+        data: { eventId: districtEvent.id, userId: constituencyAdmin.id },
       });
 
-      for (const booth of boothsByMandal[mandal.id]) {
+      for (const booth of boothsByConstituency[constituency.id]) {
         const boothAdmin = await prisma.user.create({
           data: {
             name: nextName(),
@@ -115,7 +137,7 @@ async function main() {
             passwordHash: defaultPassword,
             role: "ADMIN",
             regionId: booth.id,
-            parentUserId: mandalAdmin.id,
+            parentUserId: constituencyAdmin.id,
           },
         });
 

@@ -44,6 +44,8 @@ export interface PollDashboardRespondent {
   area: string;
   status: "PENDING" | "SENT" | "FAILED" | "ANSWERED";
   selectedOption: number | null;
+  /** The button label exactly as tapped, even if it matches no known option. */
+  answerLabel?: string | null;
   sentAt: string | null;
   answeredAt: string | null;
 }
@@ -59,6 +61,12 @@ export interface PollDashboard {
   id: string;
   question: string;
   options: string[];
+  /** The approved template the poll was asked with; its buttons are the options. */
+  templateName?: string | null;
+  /** Null for a standalone poll. */
+  taskId?: string | null;
+  createdAt?: string;
+  deadline?: string | null;
   kpis: {
     totalRecipients: number;
     sent: number;

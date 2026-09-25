@@ -2,6 +2,7 @@
 
 import { useState } from "react";
 import { Input, Label } from "@/components/ui/input";
+import { PasswordInput } from "@/components/ui/password-input";
 import { Button } from "@/components/ui/button";
 import { useRequestPhoneChange, useConfirmPhoneChange } from "@/hooks/use-profile";
 
@@ -60,9 +61,8 @@ export function PhoneChangeCard({ currentPhone }: { currentPhone: string }) {
           </div>
           <div>
             <Label htmlFor="currentPasswordForPhone">Current password</Label>
-            <Input
+            <PasswordInput
               id="currentPasswordForPhone"
-              type="password"
               required
               value={currentPassword}
               onChange={(e) => setCurrentPassword(e.target.value)}

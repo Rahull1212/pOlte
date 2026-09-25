@@ -4,7 +4,7 @@ import { PrismaService } from "../../prisma/prisma.service";
  * Returns true if `targetRegionId` is the same as `scopeRegionId` or lives
  * anywhere underneath it in the Region tree (State -> District -> ... -> Booth).
  * Used to enforce that a District Head can only touch their own district's
- * subtree, a Mandal Head only their mandal, etc.
+ * subtree, a Constituency Head only their constituency, etc.
  */
 export async function isRegionWithinScope(
   prisma: PrismaService,

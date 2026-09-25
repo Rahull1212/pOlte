@@ -28,7 +28,6 @@ export interface BulkRecipient {
   rawPhone: string;
   districtName: string | null;
   constituencyName: string | null;
-  mandalName: string | null;
   boothName: string | null;
   regionId: string | null;
   isValidPhone: boolean;
@@ -54,7 +53,6 @@ export interface UploadResult {
 export interface FilterOption {
   districtName: string | null;
   constituencyName: string | null;
-  mandalName: string | null;
   boothName: string | null;
 }
 

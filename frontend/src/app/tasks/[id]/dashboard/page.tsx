@@ -18,6 +18,8 @@ import {
   TaskDashboardCadre,
   TaskTimelineEvent,
 } from "@/hooks/use-tasks";
+import { downloadTaskReport } from "@/lib/task-report";
+import { ButtonResponsesCard } from "@/components/button-responses-card";
 
 const ackTone: Record<string, "slate" | "green" | "red" | "amber"> = {
   AWAITING: "amber",
@@ -113,6 +115,7 @@ export default function TaskDashboardPage() {
 
   const [question, setQuestion] = useState("");
   const [qaHistory, setQaHistory] = useState<{ question: string; answer: string }[]>([]);
+  const [reportState, setReportState] = useState<"idle" | "building" | "error">("idle");
 
   if (isLoading) {
     return (
@@ -130,7 +133,7 @@ export default function TaskDashboardPage() {
     );
   }
 
-  const { kpis, cadres, dailyProgress, progressFunnel, timeline } = dashboard;
+  const { kpis, cadres, dailyProgress, progressFunnel, timeline, communication } = dashboard;
 
   const handleAsk = (e: React.FormEvent) => {
     e.preventDefault();
@@ -150,8 +153,57 @@ export default function TaskDashboardPage() {
         <Link href={`/tasks/${id}`} className="text-xs text-brand-600 hover:underline">
           ← Back to Task Details
         </Link>
-        <h1 className="mt-1 text-lg font-semibold text-slate-900">{dashboard.name} — Task Dashboard</h1>
+        <div className="mt-1 flex flex-wrap items-center justify-between gap-2">
+          <h1 className="text-lg font-semibold text-slate-900">{dashboard.name} — Task Dashboard</h1>
+          <div className="flex flex-col items-end">
+            {kpis.totalAssigned > 0 && (
+            <Button
+              variant="secondary"
+              disabled={reportState === "building"}
+              onClick={async () => {
+                setReportState("building");
+                try {
+                  // Built from the dashboard already in hand, so the PDF
+                  // states exactly what is on screen — no second fetch that
+                  // could return different numbers a moment later.
+                  await downloadTaskReport(dashboard);
+                  setReportState("idle");
+                } catch {
+                  setReportState("error");
+                }
+              }}
+            >
+              {reportState === "building" ? "Preparing…" : "⬇ Download report (PDF)"}
+            </Button>
+            )}
+            {reportState === "error" && (
+              <p className="mt-1 text-xs text-red-600">Could not build the PDF. Try again.</p>
+            )}
+          </div>
+        </div>
       </div>
+
+      {/* Zeros everywhere are correct here but look broken, so the reason is
+          stated plainly and the next action offered. */}
+      {kpis.totalAssigned === 0 && (
+        <Card className="mb-6 border-amber-200 bg-amber-50">
+          <CardContent className="py-5">
+            <p className="text-sm font-semibold text-amber-900">
+              {dashboard.awaitingAllocation
+                ? "Not allocated to any Cadre yet"
+                : "No Cadres on this task"}
+            </p>
+            <p className="mt-1 text-sm text-amber-800">
+              {dashboard.awaitingAllocation
+                ? "This task has been routed to the Admins covering its area, but none of them has handed it to their Cadres yet. Nothing has been sent over WhatsApp, so every figure below is zero until it is allocated."
+                : "Nobody is currently assigned to this task, so there is nothing to report yet."}
+            </p>
+            <Link href={`/tasks/${id}/allocate`}>
+              <Button className="mt-3">Allocate to Cadres</Button>
+            </Link>
+          </CardContent>
+        </Card>
+      )}
 
       {/* 1. Task KPIs */}
       <div className="mb-6 grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-5">
@@ -170,10 +222,20 @@ export default function TaskDashboardPage() {
 
       <div className="grid grid-cols-1 gap-5 lg:grid-cols-3">
         <div className="space-y-5 lg:col-span-2">
-          {/* 2. WhatsApp Communication Analytics */}
+          {/* 2. WhatsApp Communication Analytics — every number below comes
+              from the Message Log, so this card and that page can't disagree.
+              The tiles count CADRES (newest message per person wins); the
+              footnote counts MESSAGES, which is higher once anything was
+              retried. */}
           <Card>
-            <CardHeader>
+            <CardHeader className="flex flex-row items-center justify-between">
               <CardTitle>WhatsApp Communication Analytics</CardTitle>
+              <Link
+                href={`/message-log?q=${encodeURIComponent(dashboard.name)}`}
+                className="text-xs font-medium text-brand-600 hover:underline"
+              >
+                View message log
+              </Link>
             </CardHeader>
             <CardContent className="grid grid-cols-2 gap-3 sm:grid-cols-3">
               <Kpi label="Sent" value={kpis.whatsappSent} tone="text-blue-600" />
@@ -183,7 +245,29 @@ export default function TaskDashboardPage() {
               <Kpi label="Response Received" value={kpis.responded} tone="text-emerald-600" />
               <Kpi label="No Response" value={kpis.noResponse} tone={kpis.noResponse > 0 ? "text-amber-600" : undefined} />
             </CardContent>
+            {/* Hidden when the log has nothing for this task: older sends
+                were recorded without a task id, and "0 messages sent" beside
+                a non-zero Sent count would read as a contradiction. */}
+            {communication.total > 0 && (
+            <div className="border-t border-slate-100 px-5 py-3 text-xs text-slate-500">
+              {communication.total} message{communication.total === 1 ? "" : "s"} sent in total
+              {communication.total > kpis.totalAssigned && " (includes retries and follow-ups)"} —{" "}
+              <span className="text-emerald-700">{communication.deliveryRatePct}% delivered</span>,{" "}
+              <span className="text-emerald-700">{communication.readRatePct}% read</span>
+              {communication.failed > 0 && (
+                <>
+                  , <span className="text-red-600">{communication.failureRatePct}% failed</span>
+                </>
+              )}
+              .
+            </div>
+            )}
           </Card>
+
+          {/* Which button each Cadre pressed on the template we sent them.
+              Scoped to this task, so it answers "who said yes to THIS" rather
+              than mixing in every other send. */}
+          <ButtonResponsesCard filters={dashboard.isBatch ? { batchId: id } : { taskId: id }} />
 
           {/* "Have you completed your task?" check-in results */}
           {kpis.completionAsked > 0 && (
@@ -263,7 +347,7 @@ export default function TaskDashboardPage() {
                 <thead className="border-b border-slate-100 text-left text-xs uppercase text-slate-500">
                   <tr>
                     <th className="px-5 py-2">Cadre</th>
-                    <th className="px-5 py-2">Mandal</th>
+                    <th className="px-5 py-2">Constituency</th>
                     <th className="px-5 py-2">WhatsApp Status</th>
                     <th className="px-5 py-2">Response Status</th>
                     <th className="px-5 py-2">Task Status</th>
@@ -283,7 +367,7 @@ export default function TaskDashboardPage() {
                           </Badge>
                         )}
                       </td>
-                      <td className="px-5 py-2 text-slate-600">{c.mandal ?? "—"}</td>
+                      <td className="px-5 py-2 text-slate-600">{c.constituency ?? "—"}</td>
                       <td className="px-5 py-2">
                         <div className="flex items-center gap-2">
                           <Badge tone={whatsappTone[c.whatsappStatus]}>{c.whatsappStatus}</Badge>

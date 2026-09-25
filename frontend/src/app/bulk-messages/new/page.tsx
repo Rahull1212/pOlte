@@ -96,7 +96,7 @@ export default function NewBulkCampaignPage() {
                 className="block w-full text-sm text-slate-600 file:mr-3 file:rounded-md file:border-0 file:bg-slate-100 file:px-3 file:py-2 file:text-sm file:font-medium hover:file:bg-slate-200"
               />
               <p className="mt-2 text-xs text-slate-500">
-                Expected columns: Phone Number (required), Name, District, Constituency, Mandal, Booth.
+                Expected columns: Phone Number (required), Name, District, Assembly Constituency, Polling Station.
               </p>
             </div>
 

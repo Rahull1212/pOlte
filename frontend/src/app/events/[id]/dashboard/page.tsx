@@ -48,7 +48,7 @@ export default function EventDashboardPage() {
     );
   }
 
-  const { kpis, districtWise, mandalWise, memberWise, attendanceTrend } = dashboard;
+  const { kpis, districtWise, constituencyWise, memberWise, attendanceTrend } = dashboard;
 
   return (
     <AppShell>
@@ -184,28 +184,28 @@ export default function EventDashboardPage() {
 
           <Card>
             <CardHeader>
-              <CardTitle>Mandal-wise Attendance</CardTitle>
+              <CardTitle>Constituency-wise Attendance</CardTitle>
             </CardHeader>
             <CardContent className="p-0">
               <table className="w-full text-sm">
                 <thead className="border-b border-slate-100 text-left text-xs uppercase text-slate-500">
                   <tr>
-                    <th className="px-4 py-2">Mandal</th>
+                    <th className="px-4 py-2">Constituency</th>
                     <th className="px-4 py-2">Attended</th>
                     <th className="px-4 py-2">%</th>
                   </tr>
                 </thead>
                 <tbody>
-                  {mandalWise.map((m) => (
-                    <tr key={m.mandal} className="border-b border-slate-50">
-                      <td className="px-4 py-2 text-slate-800">{m.mandal}</td>
+                  {constituencyWise.map((m) => (
+                    <tr key={m.constituency} className="border-b border-slate-50">
+                      <td className="px-4 py-2 text-slate-800">{m.constituency}</td>
                       <td className="px-4 py-2 text-slate-600">
                         {m.attended}/{m.invited}
                       </td>
                       <td className="px-4 py-2 text-slate-600">{m.attendancePct}%</td>
                     </tr>
                   ))}
-                  {mandalWise.length === 0 && (
+                  {constituencyWise.length === 0 && (
                     <tr>
                       <td colSpan={3} className="px-4 py-6 text-center text-slate-400">
                         No data.

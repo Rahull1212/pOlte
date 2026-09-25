@@ -30,9 +30,9 @@ export class AnalyticsController {
     return this.analyticsService.regionProgress(campaignId, "DISTRICT", user);
   }
 
-  @Get("mandal-progress")
-  mandalProgress(@Query("campaignId") campaignId: string, @CurrentUser() user: AuthenticatedUser) {
-    return this.analyticsService.regionProgress(campaignId, "MANDAL", user);
+  @Get("constituency-progress")
+  constituencyProgress(@Query("campaignId") campaignId: string, @CurrentUser() user: AuthenticatedUser) {
+    return this.analyticsService.regionProgress(campaignId, "CONSTITUENCY", user);
   }
 
   @Get("booth-progress")

@@ -60,12 +60,26 @@ export class CitizensService {
     });
   }
 
-  async findById(id: string) {
+  /**
+   * Scoped like findMany above. Without `user` this returned any citizen's
+   * record — name, phone, address and their grievance history — to any
+   * authenticated caller, which quietly undid the region scoping the list
+   * endpoint takes care to apply.
+   *
+   * Out of scope reports "not found" rather than "forbidden": a 403 would
+   * confirm the record exists, which is itself information about a private
+   * individual.
+   */
+  async findById(id: string, user: AuthenticatedUser) {
     const citizen = await this.prisma.citizen.findUnique({
       where: { id },
       include: { grievances: { orderBy: { createdAt: "desc" } } },
     });
     if (!citizen) throw new NotFoundException("Citizen not found");
+    if (user.role === "SUPER_ADMIN") return citizen;
+
+    const scoped = await this.regionsService.descendantIds(user.regionId);
+    if (!scoped.includes(citizen.regionId)) throw new NotFoundException("Citizen not found");
     return citizen;
   }
 }

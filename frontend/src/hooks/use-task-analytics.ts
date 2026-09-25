@@ -5,7 +5,7 @@ export interface TaskAnalyticsFilters {
   dateFrom?: string;
   dateTo?: string;
   districtId?: string;
-  mandalId?: string;
+  constituencyId?: string;
   status?: string;
   priority?: string;
   taskType?: "BULK" | "INDIVIDUAL";
@@ -67,7 +67,7 @@ export interface CadreAnalyticsRow {
   cadreId: string;
   name: string;
   district: string | null;
-  mandal: string | null;
+  constituency: string | null;
   tasksAssigned: number;
   tasksCompleted: number;
   pending: number;
@@ -76,8 +76,8 @@ export interface CadreAnalyticsRow {
   avgCompletionHours: number | null;
 }
 
-export interface MandalAnalyticsRow {
-  mandal: string;
+export interface ConstituencyAnalyticsRow {
+  constituency: string;
   cadres: number;
   total: number;
   messagesSent: number;
@@ -111,9 +111,9 @@ export interface TaskAnalyticsCharts {
   communicationFunnel: { stage: string; count: number }[];
   deliveryPct: number;
   responsePct: number;
-  completionByMandal: { name: string; completionPct: number }[];
+  completionByConstituency: { name: string; completionPct: number }[];
   cadrePerformance: { name: string; completionPct: number; completed: number; total: number }[];
-  overdueByMandal: { name: string; overdue: number }[];
+  overdueByConstituency: { name: string; overdue: number }[];
   tasksByPriority: { name: string; value: number }[];
   tasksCreatedOverTime: { date: string; count: number }[];
   completionTrend: { date: string; count: number }[];
@@ -186,10 +186,10 @@ export function useCadreAnalytics(filters: TaskAnalyticsFilters) {
   });
 }
 
-export function useMandalAnalytics(filters: TaskAnalyticsFilters) {
+export function useConstituencyAnalytics(filters: TaskAnalyticsFilters) {
   return useQuery({
-    queryKey: ["task-analytics", "mandals", filters],
-    queryFn: () => api.get<MandalAnalyticsRow[]>(`/task-analytics/mandals${queryString(filters)}`),
+    queryKey: ["task-analytics", "constituencies", filters],
+    queryFn: () => api.get<ConstituencyAnalyticsRow[]>(`/task-analytics/constituencies${queryString(filters)}`),
   });
 }
 
